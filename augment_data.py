@@ -3,7 +3,7 @@ import cv2
 import random
 import numpy as np
 import math
-import shutil
+import albumentations as A
 from shapely.geometry import Polygon, box, MultiPolygon
 from shapely.ops import unary_union
 
@@ -412,6 +412,8 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
                   overlay_min_max_scale, maintain_aspect_ratio_weights, 
                   zoom_weights, zoom_in_vs_out_weights, zoom_padding, coco_image_folder):
     
+    
+
     if current_subfolder not in skip_augmentations['Mirror']:
         mirror_choice = random.choices([True, False], weights=mirror_weights, k=1)[0]
         if mirror_choice:
@@ -456,6 +458,54 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
             coco_image = cv2.imread(coco_image_path)
             image, polygons = overlay_detections_on_coco(coco_image, image, polygons, overlay_min_max_scale[0], overlay_min_max_scale[1])
     
-    
+    p_augment = 0.5  # Base probability for image quality augmentations
+
+    # Create Albumentations transform focusing on image quality
+    transform = A.Compose([
+        # Noise and Color Transformations
+        A.MultiplicativeNoise(per_channel=True, p=p_augment),
+        # A.RGBShift(p=p_augment),
+        
+        # Fog and Sun Flare with simplified parameters
+        A.RandomFog(p=p_augment/2),
+        A.RandomSunFlare(p=p_augment/2),
+        
+        A.GaussianBlur(p=p_augment),
+        A.ISONoise(p=p_augment),
+        
+        # Simplified Image Compression
+        A.ImageCompression(p=p_augment),
+        
+        A.MotionBlur(p=p_augment),
+        A.Posterize(p=p_augment),
+        
+        # Simplified Shadow
+        A.RandomShadow(p=p_augment/2),
+        
+        A.RandomBrightnessContrast(p=p_augment),
+        
+        # Defocus with minimal parameters
+        A.Defocus(p=p_augment/2),
+        
+        A.Emboss(p=p_augment),
+        
+        # Less common or more subtle transformations
+        A.RandomGamma(p=p_augment/2),
+        A.RandomToneCurve(p=p_augment/2),
+        
+        # # Color Temperature Jitter 
+        # A.ColorJitter(
+        #     brightness=0.2, 
+        #     contrast=0.2, 
+        #     saturation=0.2, 
+        #     hue=0.2, 
+        #     p=p_augment/2
+        # )
+    ], additional_targets={'image': 'image'})
+
+    # Apply augmentation
+    augmented = transform(image=image)
+    image = augmented['image']
+
     formatted_polygons = [['{}'.format(class_id), *polygon] for class_id, polygon in zip(class_ids, polygons)]
     return image, formatted_polygons

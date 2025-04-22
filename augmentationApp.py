@@ -5,26 +5,25 @@ import random
 import time
 from collections import Counter
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QFileDialog, QSlider, QSpinBox, QMessageBox, QGroupBox, QFormLayout,
+                             QFileDialog, QSlider, QMessageBox, QGroupBox, QFormLayout,
                              QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QGridLayout, QSplitter,
                              QListWidget, QListWidgetItem, QSizePolicy, QScrollArea, QTabWidget, QColorDialog, 
                              QAbstractItemView, QProgressDialog, QProgressBar, QTextEdit)
-from PyQt6.QtCore import Qt, QObject, QEvent, QSize, QPointF, QRectF, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, QEvent, QPointF, QRectF, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QBrush, QImage
 import cv2
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import numpy as np
 from augment_data import augment_image
-import multiprocessing
 import concurrent.futures
 import gc
-from queue import Queue
 from dataclasses import dataclass
 from typing import List, Dict, Any
 import hashlib
 import json
 import yaml
+import psutil
 
 @dataclass
 class BatchItem:
@@ -228,7 +227,6 @@ class AugmentationWorker(QThread):
     def calculate_optimal_workers(self):
         """Calculate the optimal number of worker processes based on system resources."""
         try:
-            import psutil
             
             # Get system memory information
             mem = psutil.virtual_memory()
@@ -486,6 +484,8 @@ class AugmentDatasetGUI(QWidget):
         self.zoom_padding = [self.zoom_in_min_padding, self.zoom_in_max_padding, self.zoom_out_min_padding, self.zoom_out_max_padding]
         self.maintain_aspect_ratio_weights = [50, 50]
         self.overlay_min_max_scale = [0.3, 1.0]
+        self.id_to_label = {}
+        self.label_to_id = {}
 
         self.show_labels = True
         self.show_polygons = True 
@@ -539,7 +539,23 @@ class AugmentDatasetGUI(QWidget):
         self.installEventFilter(ClickFilter(self))
 
     def save_current_config(self):
+        # Get the current order of sliders
+        slider_order = []
+        for i in range(self.sliders_list.count()):
+            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
+            # Find the slider widget in the layout
+            for j in range(item_widget.layout().count()):
+                widget = item_widget.layout().itemAt(j).widget()
+                if isinstance(widget, QSlider):
+                    # Find which attribute this slider corresponds to
+                    for attr_name, attr_value in vars(self).items():
+                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
+                            slider_order.append(self.slider_to_augmentation_type[attr_name])
+                            break
+                    break
+        
         config_data = {
+            "augmentation_order": slider_order,
             "crop_probability": self.crop_slider.value(),
             "maintain_aspect_ratio": self.maintain_aspect_ratio_slider.value(),
             "mirror_probability": self.mirror_slider.value(),
@@ -555,6 +571,7 @@ class AugmentDatasetGUI(QWidget):
     def load_existing_config(self):
         config_data = self.config_manager.load_config()
         if config_data:
+            # Set slider values
             self.crop_slider.setValue(config_data.get("crop_probability", 0))
             self.maintain_aspect_ratio_slider.setValue(config_data.get("maintain_aspect_ratio", 0))
             self.mirror_slider.setValue(config_data.get("mirror_probability", 0))
@@ -564,7 +581,42 @@ class AugmentDatasetGUI(QWidget):
             self.zoom_in_vs_out_slider.setValue(config_data.get("zoom_in_vs_out", 0))
             self.zoom_slider.setValue(config_data.get("zoom_probability", 0))
             self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", False))
-
+            
+            # Apply saved order if available
+            if "augmentation_order" in config_data:
+                self.reorder_sliders_from_config(config_data["augmentation_order"])
+                
+    def reorder_sliders_from_config(self, order):
+        """Reorder sliders based on the order saved in the config"""
+        # Create a mapping of augmentation type to list item index
+        current_order = {}
+        for i in range(self.sliders_list.count()):
+            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
+            for j in range(item_widget.layout().count()):
+                widget = item_widget.layout().itemAt(j).widget()
+                if isinstance(widget, QSlider):
+                    for attr_name, attr_value in vars(self).items():
+                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
+                            aug_type = self.slider_to_augmentation_type[attr_name]
+                            current_order[aug_type] = i
+                            break
+                    break
+        
+        # Reorder based on saved configuration
+        for i, aug_type in enumerate(order):
+            if aug_type in current_order:
+                current_idx = current_order[aug_type]
+                if current_idx != i:
+                    # Move the item to the correct position
+                    item = self.sliders_list.takeItem(current_idx)
+                    self.sliders_list.insertItem(i, item)
+                    self.sliders_list.setItemWidget(item, self.sliders_list.itemWidget(item))
+                    
+                    # Update the current_order mapping for remaining items
+                    for k in current_order:
+                        if current_order[k] > current_idx:
+                            current_order[k] -= 1
+                    current_order[aug_type] = i
 
     def init_augmentation_settings_tab(self):
         layout = QVBoxLayout()
@@ -593,69 +645,80 @@ class AugmentDatasetGUI(QWidget):
         
         # Weights sliders with scroll area inside a group box
         weights_group = QGroupBox("Augmentation Settings")
-        weights_layout = QGridLayout()
+        weights_layout = QVBoxLayout()  # Changed to QVBoxLayout to simplify
 
-        self.mirror_slider, self.mirror_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Mirror % Probability:", self.mirror_slider, self.mirror_value, 0)
+        self.sliders_list = QListWidget()
+        self.sliders_list.setDragEnabled(True)
+        self.sliders_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.sliders_list.setMinimumHeight(300) 
+        
+        self.sliders_list.setStyleSheet("""
+            QListWidget::item:selected { 
+                background: transparent; 
+                color: black;
+            }
+            QListWidget::item:hover { 
+                background: transparent; 
+                border: none;
+            }
+            QListWidget::item:selected:active {
+                background: transparent;
+                color: black;
+            }
+            QListWidget::item:selected:!active {
+                background: transparent;
+                color: black;
+            }
+        """)
+            
+        self.slider_data = [
+            {"name": "Mirror % Probability:", "object": "mirror_slider", "value_object": "mirror_value"},
+            {"name": "Rotate % Probability:", "object": "rotate_slider", "value_object": "rotate_value"},
+            {"name": "Rotation (0 to 360) vs 90 %: ", "object": "rotation_random_vs_90_slider", "value_object": "rotation_random_vs_90_value"},
+            {"name": "Crop % Probability:", "object": "crop_slider", "value_object": "crop_value"},
+            {"name": "Maintain Aspect Ratio on Crop %: ", "object": "maintain_aspect_ratio_slider", "value_object": "maintain_aspect_ratio_value"},
+            {"name": "Zoom % Probability:", "object": "zoom_slider", "value_object": "zoom_value"},
+            {"name": "Zoom In vs Out %: ", "object": "zoom_in_vs_out_slider", "value_object": "zoom_in_vs_out_value"},
+            {"name": "Overlay % Probability:", "object": "overlay_slider", "value_object": "overlay_value"}
+        ]
 
-        self.rotate_slider, self.rotate_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Rotate % Probability:", self.rotate_slider, self.rotate_value, 1)
-
-        self.rotation_random_vs_90_slider, self.rotation_random_vs_90_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Rotation (0 to 360) vs 90 %: ", self.rotation_random_vs_90_slider, self.rotation_random_vs_90_value, 2)
-
-        self.crop_slider, self.crop_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Crop % Probability:", self.crop_slider, self.crop_value, 3)
-
-        self.maintain_aspect_ratio_slider, self.maintain_aspect_ratio_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Maintain Aspect Ratio on Crop %: ", self.maintain_aspect_ratio_slider, self.maintain_aspect_ratio_value, 4)
-
-        self.zoom_slider, self.zoom_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Zoom % Probability:", self.zoom_slider, self.zoom_value, 5)
-
-        self.zoom_in_vs_out_slider, self.zoom_in_vs_out_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Zoom In vs Out %: ", self.zoom_in_vs_out_slider, self.zoom_in_vs_out_value, 6)
-
-        self.overlay_slider, self.overlay_value = self.create_slider()
-        self.add_slider_to_layout(weights_layout, "Overlay % Probability:", self.overlay_slider, self.overlay_value, 7)
-
-        settings_buttons_group = QHBoxLayout()
-
-        # Skip existing checkbox
+        self.slider_to_augmentation_type = {
+            "mirror_slider": "mirror",
+            "rotate_slider": "rotate",
+            "rotation_random_vs_90_slider": "rotation_random_vs_90",
+            "crop_slider": "crop",
+            "maintain_aspect_ratio_slider": "maintain_aspect_ratio",
+            "zoom_slider": "zoom",
+            "zoom_in_vs_out_slider": "zoom_in_vs_out",
+            "overlay_slider": "overlay"
+        }
+        for slider_info in self.slider_data:
+            self.add_slider_to_list(slider_info["name"], slider_info["object"], slider_info["value_object"])
+        
+        weights_layout.addWidget(self.sliders_list)
+        
+        # Settings buttons group (ONLY ONE DEFINITION)
+        settings_buttons_layout = QHBoxLayout()
         self.skip_existing_checkbox = QCheckBox("Skip Already Augmented Images")
         self.skip_existing_checkbox.setChecked(True)
-        settings_buttons_group.addWidget(self.skip_existing_checkbox)
-
+        settings_buttons_layout.addWidget(self.skip_existing_checkbox)
         
         self.load_config_button = QPushButton("Load Config")
         self.save_config_button = QPushButton("Save Config")
         
         self.load_config_button.clicked.connect(self.load_existing_config)
         self.save_config_button.clicked.connect(self.save_current_config)
-
-       
-        settings_buttons_group.addWidget(self.load_config_button)
-        settings_buttons_group.addWidget(self.save_config_button)
-
-        weights_layout.addLayout(settings_buttons_group, weights_layout.rowCount(), 0, 1, weights_layout.columnCount())
+        
+        settings_buttons_layout.addWidget(self.load_config_button)
+        settings_buttons_layout.addWidget(self.save_config_button)
+        
+        # Add the settings buttons layout to the weights layout
+        weights_layout.addLayout(settings_buttons_layout)
         weights_group.setLayout(weights_layout)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_widget.setLayout(weights_layout)
-        scroll_area.setWidget(scroll_widget)
-
-        group_box_with_scroll = QGroupBox("Augmentation Settings")
-        group_box_layout = QVBoxLayout()
-        group_box_layout.addWidget(scroll_area)
-        group_box_with_scroll.setLayout(group_box_layout)
-        group_box_with_scroll.setMinimumWidth(400)
-
-        weights_skip_layout.addWidget(group_box_with_scroll)
+        # Skip Augmentations
         skip_colors_layout = QSplitter(Qt.Orientation.Vertical)
 
-        # Skip Augmentations
         self.skip_group = QGroupBox("Skip Augmentations for Folders")
         self.skip_layout = QVBoxLayout()
         self.skip_table = QTableWidget()
@@ -679,7 +742,7 @@ class AugmentDatasetGUI(QWidget):
         self.class_colors_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.class_colors_table.itemClicked.connect(self.on_color_cell_clicked)
         self.class_colors_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.class_colors_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)  # Set size policy to Expanding
+        self.class_colors_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.class_colors_layout.addWidget(self.class_colors_table)
         self.class_color_group.setLayout(self.class_colors_layout)
         
@@ -687,18 +750,56 @@ class AugmentDatasetGUI(QWidget):
         skip_colors_layout.setCollapsible(0, False)
         skip_colors_layout.setCollapsible(1, False)
 
+        weights_skip_layout.addWidget(weights_group)
         weights_skip_layout.addWidget(skip_colors_layout)
-        weights_skip_layout.setSizes([800, 400])  # Initial sizes of the panels, evenly split
+        weights_skip_layout.setSizes([800, 400])  # Initial sizes of the panels
         weights_skip_layout.setCollapsible(0, False)
         weights_skip_layout.setCollapsible(1, False)
 
         # Set minimum sizes
-        self.skip_group.setMinimumWidth(400)  # Set a minimum width for the skip group
-        weights_skip_layout.setMinimumWidth(1200)  # Ensure the splitter does not resize smaller than the initial setup
+        self.skip_group.setMinimumWidth(400)
+        weights_skip_layout.setMinimumWidth(1200)
         weights_skip_layout.setHandleWidth(10)
 
         layout.addWidget(weights_skip_layout)
         self.augmentation_settings_tab.setLayout(layout)
+
+    def add_slider_to_list(self, name, slider_attr, value_attr):
+        # Create a widget to hold the slider row
+        item_widget = QWidget()
+        item_layout = QHBoxLayout(item_widget)
+        item_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Create drag handle label
+        drag_handle = QLabel("≡")  # Using equal sign to create a simple handle icon
+        drag_handle.setFixedWidth(20)
+        drag_handle.setStyleSheet("""
+            font-size: 18px; 
+            color: #999;
+            padding: 2px;
+            border-radius: 3px;
+        """)
+        
+        # Create label
+        label = QLabel(name)
+        label.setMinimumWidth(180)  # Reduced width slightly to make room for handle
+        
+        # Create slider and value
+        slider, value_edit = self.create_slider()
+        setattr(self, slider_attr, slider)
+        setattr(self, value_attr, value_edit)
+        
+        # Add to layout
+        item_layout.addWidget(drag_handle)
+        item_layout.addWidget(label)
+        item_layout.addWidget(slider, 1)  # Give slider stretch factor
+        item_layout.addWidget(value_edit)
+        
+        # Add row to list widget
+        list_item = QListWidgetItem(self.sliders_list)
+        list_item.setSizeHint(item_widget.sizeHint())
+        self.sliders_list.addItem(list_item)
+        self.sliders_list.setItemWidget(list_item, item_widget)
 
     def init_image_viewer_tab(self):
         layout = QVBoxLayout()
@@ -802,18 +903,24 @@ class AugmentDatasetGUI(QWidget):
         self.update_class_colors_table()
 
     def on_color_cell_clicked(self, item):
-        if item.column() == 1:  # Check if the clicked cell is in the color column
-            row = item.row()
-            class_id = self.class_colors_table.item(row, 0).text()
-            color = QColorDialog.getColor(self.class_colors[class_id], self, "Choose Class Color")
-            if color.isValid():
-                self.class_colors[class_id] = color
-                self.update_class_colors_table()
-                self.show_image()
+        try:
+            if item.column() == 1:  # Check if the clicked cell is in the color column
+                row = item.row()
+                class_id = self.class_colors_table.item(row, 0).text()
+                class_id = self.label_to_id[class_id]
+                color = QColorDialog.getColor(self.class_colors[class_id], self, "Choose Class Color")
+                if color.isValid():
+                    self.class_colors[class_id] = color
+                    self.update_class_colors_table()
+                    self.show_image()
+        except:
+            pass
 
     def update_class_colors_table(self):
         self.class_colors_table.setRowCount(len(self.class_colors))
         for row, (class_id, color) in enumerate(self.class_colors.items()):
+
+            class_id = self.id_to_label[class_id]
             
             class_item = QTableWidgetItem(class_id)
             color_item = QTableWidgetItem()
@@ -881,10 +988,17 @@ class AugmentDatasetGUI(QWidget):
                     # Try to convert numeric class_id to YAML label
                     label = self.yaml_labels[int(class_id)] if int(class_id) < len(self.yaml_labels) else class_id
                     class_names.append(label)
+                    self.id_to_label[class_id] = label
+                    self.label_to_id[label] = class_id
+                    
                 except (ValueError, IndexError):
                     class_names.append(class_id)
+                    self.id_to_label[class_id] = class_id
+                    self.label_to_id[class_id] = class_id
             else:
                 class_names.append(class_id)
+                self.id_to_label[class_id] = class_id
+                self.label_to_id[class_id] = class_id
 
         class_table = QTableWidget()
         class_table.setColumnCount(3)
@@ -911,8 +1025,8 @@ class AugmentDatasetGUI(QWidget):
         counts = list(class_counter.values())
 
         # Assign colors to classes
-        self.class_colors = {str(class_name): QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for class_name in classes}
-        colors = [self.class_colors[str(class_name)] for class_name in classes]
+        self.class_colors = {class_id: QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for class_id in self.id_to_label.keys()}
+        colors = [self.class_colors[class_id] for class_id in self.id_to_label.keys()]
 
         bars = ax.bar(classes, counts, color=[self.rgb_to_hex(c) for c in colors])
         ax.set_xlabel('Classes')
@@ -1057,22 +1171,23 @@ class AugmentDatasetGUI(QWidget):
     
         # Store the YAML labels as an instance attribute for later use
         self.yaml_labels = yaml_labels
-        
+
         # If YAML is found, update class colors without losing existing color assignments
         if yaml_labels:
             # Create a mapping that preserves existing colors
-            new_class_colors = {}
-            for class_id, color in self.class_colors.items():
+            new_id_to_labels = {}
+            
+            for class_id, label in self.id_to_label.items():
                 # Convert int keys to strings to match existing class_colors format
                 try:
                     # Try to convert numeric class_id to a name from YAML
                     label = yaml_labels[int(class_id)] if int(class_id) < len(yaml_labels) else class_id
-                    new_class_colors[str(label)] = color
+                    new_id_to_labels[int(class_id)] = str(label)
                 except (ValueError, IndexError):
                     # If conversion fails, keep the original class_id
-                    new_class_colors[class_id] = color
+                    new_id_to_labels[class_id] = class_id
             
-            self.class_colors = new_class_colors
+            self.id_to_label = new_id_to_labels
             
             # Update table and visualization
             self.update_class_colors_table()
@@ -1081,6 +1196,7 @@ class AugmentDatasetGUI(QWidget):
             # Update dataset stats graph to use YAML labels
             if hasattr(self, 'get_dataset_stats'):
                 self.get_dataset_stats()
+
 
     def toggle_skip_all(self, state, row):
         skip_all_checked = state == Qt.CheckState.Checked
@@ -1251,16 +1367,25 @@ class AugmentDatasetGUI(QWidget):
         self.show_points = self.points_checkbox.isChecked()
         self.show_image()
 
+    def get_augmentation_order(self):
+        """Get the current order of augmentations from the sliders list"""
+        augmentation_order = []
+        for i in range(self.sliders_list.count()):
+            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
+            for j in range(item_widget.layout().count()):
+                widget = item_widget.layout().itemAt(j).widget()
+                if isinstance(widget, QSlider):
+                    for attr_name, attr_value in vars(self).items():
+                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
+                            augmentation_order.append(self.slider_to_augmentation_type[attr_name])
+                            break
+                    break
+        return augmentation_order
+
     def display_image_and_polygons(self, image, polygons):
-        print("Displaying image with class colors:", self.class_colors)
-        
         for polygon in polygons:
             class_id = polygon[0]
-            print(f"Polygon class_id: {class_id}")
-            print(f"Color for this class: {self.class_colors.get(class_id, 'Not found')}")
-            
             if class_id not in self.class_colors:
-                print(f"Class {class_id} not in class_colors, generating new color")
                 self.class_colors[class_id] = QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
         
         height, width, _ = image.shape
@@ -1509,6 +1634,9 @@ class AugmentDatasetGUI(QWidget):
         # Make the dialog modal
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         
+        # Get the current augmentation order
+        augmentation_order = self.get_augmentation_order()
+
         # Prepare parameters (same as before)
         params = {
             'image_dir': os.path.join(self.dataset_root, 'images'),
@@ -1531,7 +1659,8 @@ class AugmentDatasetGUI(QWidget):
             'zoom_in_vs_out_weights': [self.zoom_in_vs_out_slider.value(),
                                     100 - self.zoom_in_vs_out_slider.value()],
             'zoom_padding': self.zoom_padding,
-            'coco_image_folder': self.overlay_image_dir if self.overlay_image_dir else ""
+            'coco_image_folder': self.overlay_image_dir if self.overlay_image_dir else "",
+            'augmentation_order': augmentation_order  # Add the new parameter
         }
 
         # Create and configure worker
@@ -1602,10 +1731,12 @@ class AugmentDatasetGUI(QWidget):
         crop_weights = [self.crop_slider.value(), 100 - self.crop_slider.value()]
         zoom_weights = [self.zoom_slider.value(), 100 - self.zoom_slider.value()]
         rotate_weights = [self.rotate_slider.value(), 100 - self.rotate_slider.value()]
-        #overlay_scale_weights = [self.overlay_scale_slider.value(), 100 - self.overlay_scale_slider.value()]
         maintain_aspect_ratio_weights = [self.maintain_aspect_ratio_slider.value(), 100 - self.maintain_aspect_ratio_slider.value()]
         zoom_in_vs_out_weights = [self.zoom_in_vs_out_slider.value(), 100 - self.zoom_in_vs_out_slider.value()]
         rotation_random_vs_90_weights = [self.rotation_random_vs_90_slider.value(), 100 - self.rotation_random_vs_90_slider.value()]
+
+        # Get the current augmentation order
+        augmentation_order = self.get_augmentation_order()
 
         # Load the image
         image = cv2.imread(self.current_image_path)
@@ -1650,7 +1781,8 @@ class AugmentDatasetGUI(QWidget):
             zoom_weights, 
             zoom_in_vs_out_weights,
             self.zoom_padding,
-            self.overlay_image_dir if self.overlay_image_dir else ""
+            self.overlay_image_dir if self.overlay_image_dir else "",
+            augmentation_order=augmentation_order  # Add the new parameter
         )
 
         (new_h, new_w) = augmented_image.shape[:2]
