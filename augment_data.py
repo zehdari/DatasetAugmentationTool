@@ -287,38 +287,44 @@ def adjust_polygons_for_crop(polygons, crop_line, keep, orientation):
         final_polygons.append(adjusted_polygon)
     return final_polygons
     
-def pad_image_and_adjust_polygons(cropped_image, adjusted_polygons, original_dimensions):
+def pad_image_and_adjust_polygons(cropped_image, adjusted_polygons,
+                                  original_dimensions):
     cropped_height, cropped_width = cropped_image.shape[:2]
-    original_height, original_width = original_dimensions
+    original_heigh, original_width = original_dimensions
 
-    # Calculate padding needed to restore original dimensions
-    pad_vertical = (original_height - cropped_height) // 2
-    pad_horizontal = (original_width - cropped_width) // 2
+    # Decide how much to pad
+    padding_vertical = max(0, original_heigh - cropped_height)
+    padding_horizontal = max(0, original_width - cropped_width)
 
-    # Pad the cropped image
-    padded_image = cv2.copyMakeBorder(cropped_image, pad_vertical, pad_vertical, pad_horizontal, pad_horizontal, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    top    = padding_vertical // 2
+    bottom = padding_vertical - top
+    left   = padding_horizontal // 2
+    right  = padding_horizontal - left
 
-    # Adjust polygon coordinates
+    # Build the padded image
+    padded_image = cv2.copyMakeBorder(
+        cropped_image, top, bottom, left, right,
+        cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+    # Shift the polygons by the same offsets added to the image
     shifted_polygons = []
-    for polygon in adjusted_polygons:
-        new_polygon = []
-        for x, y in polygon:
-            # Clamp, denormalize, translate, and renormalize
-            x_clamped, y_clamped = clamp(x), clamp(y)
-            abs_x, abs_y = x_clamped * cropped_width, y_clamped * cropped_height
-        
-            # Careful translation considering padding
-            translated_x = abs_x + pad_horizontal if pad_horizontal > 0 else abs_x
-            translated_y = abs_y + pad_vertical if pad_vertical > 0 else abs_y
+    for poly in adjusted_polygons:
+        new_poly = []
+        for x, y in poly:
+            # Go from normalized to absolute in the cropped image
+            x_abs = clamp(x) * cropped_width
+            y_abs = clamp(y) * cropped_height
 
-            # Renormalize to the original dimensions, considering the padding might have changed the effective area
-            new_x = translated_x / original_width
-            new_y = translated_y / original_height
+            # Translate by the padding that was added on the left/top
+            x_abs += left
+            y_abs += top
 
-            new_polygon.append((clamp(new_x), clamp(new_y)))
-        shifted_polygons.append(new_polygon)
+            # Renormalize in the final (padded) image size
+            new_poly.append((x_abs / original_width, y_abs / original_heigh))
+        shifted_polygons.append(new_poly)
 
     return padded_image, shifted_polygons
+
 
 def overlay_detections_on_coco(coco_image, image, detection_polygons, min_scale=0.1, max_scale=1.0):
     adjusted_polygons = []
@@ -407,57 +413,7 @@ def overlay_detections_on_coco(coco_image, image, detection_polygons, min_scale=
 
     return coco_image, adjusted_polygons
 
-def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, mirror_weights, crop_weights,
-                  overlay_weights, rotate_weights, rotation_random_vs_90_weights, 
-                  overlay_min_max_scale, maintain_aspect_ratio_weights, 
-                  zoom_weights, zoom_in_vs_out_weights, zoom_padding, coco_image_folder):
-    
-    
-
-    if current_subfolder not in skip_augmentations['Mirror']:
-        mirror_choice = random.choices([True, False], weights=mirror_weights, k=1)[0]
-        if mirror_choice:
-            image = mirror_image(image)
-            polygons = [mirror_polygon(polygon) for polygon in polygons]
-
-    if current_subfolder not in skip_augmentations['Crop']:
-        crop_choice = random.choices([True, False], weights=crop_weights, k=1)[0]
-        if crop_choice and polygons:
-            image, polygons, class_ids = crop_image_and_polygons(image, polygons, class_ids)
-            maintain_aspect_ratio_choice = random.choices([True, False], weights=maintain_aspect_ratio_weights, k=1)[0]
-            if maintain_aspect_ratio_choice:
-                image, polygons = pad_image_and_adjust_polygons(image, polygons, (h, w))
-    
-    
-    if current_subfolder not in skip_augmentations['Zoom']:
-        zoom_choice = random.choices([True, False], weights=zoom_weights, k=1)[0]
-        if zoom_choice and polygons:
-            zoom_in = random.choices([True, False], weights=zoom_in_vs_out_weights, k=1)[0]
-            if zoom_in:
-                image, polygons = zoom_in_image_and_polygons(image, polygons, zoom_padding[0], zoom_padding[1])
-            else:
-                image, polygons = zoom_out_image_and_polygons(image, polygons, zoom_padding[2], zoom_padding[3])
-
-    if current_subfolder not in skip_augmentations['Rotate']:
-        rotate_choice = random.choices([True, False], weights=rotate_weights, k=1)[0]
-        if rotate_choice:
-            (h, w) = image.shape[:2]
-            center = (w / 2, h / 2)
-            rotation_degree = get_rotation_angle(rotation_random_vs_90_weights)
-            image = rotate_image(image, rotation_degree)
-            new_w, new_h = image.shape[1], image.shape[0]
-            new_center = (new_w / 2, new_h / 2)
-            polygons = [rotate_polygon(polygon, rotation_degree, center, new_center, (w, h), (new_w, new_h)) for polygon in polygons]
-
-    if current_subfolder not in skip_augmentations['Overlay']:
-        overlay_choice = random.choices([True, False], weights=overlay_weights, k=1)[0]
-        if overlay_choice and polygons:
-            #overlay_scale_choice = random.choices([True, False], weights=overlay_scale_weights, k=1)[0]
-            coco_images = [os.path.join(coco_image_folder, f) for f in os.listdir(coco_image_folder) if os.path.isfile(os.path.join(coco_image_folder, f))]
-            coco_image_path = random.choice(coco_images)
-            coco_image = cv2.imread(coco_image_path)
-            image, polygons = overlay_detections_on_coco(coco_image, image, polygons, overlay_min_max_scale[0], overlay_min_max_scale[1])
-    
+def apply_albumentations(image):
     p_augment = 0.5  # Base probability for image quality augmentations
 
     # Create Albumentations transform focusing on image quality
@@ -492,20 +448,120 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
         # Less common or more subtle transformations
         A.RandomGamma(p=p_augment/2),
         A.RandomToneCurve(p=p_augment/2),
-        
-        # # Color Temperature Jitter 
-        # A.ColorJitter(
-        #     brightness=0.2, 
-        #     contrast=0.2, 
-        #     saturation=0.2, 
-        #     hue=0.2, 
-        #     p=p_augment/2
-        # )
     ], additional_targets={'image': 'image'})
 
     # Apply augmentation
     augmented = transform(image=image)
-    image = augmented['image']
+    return augmented['image']
+
+def augment_mirror(image, polygons):
+    image = mirror_image(image)
+    polygons = [mirror_polygon(polygon) for polygon in polygons]
+    return image, polygons
+
+def augment_crop(image, polygons, class_ids,
+                 maintain_aspect_ratio_weights): 
+    h_current, w_current = image.shape[:2]
+
+    image, polygons, class_ids = crop_image_and_polygons(
+        image, polygons, class_ids)
+
+    maintain = random.choices(
+        [True, False], weights=maintain_aspect_ratio_weights, k=1)[0]
+
+    if maintain:
+        # use the *current* dimensions, not the stale (h, w)
+        image, polygons = pad_image_and_adjust_polygons(
+            image, polygons, (h_current, w_current))
+
+    return image, polygons, class_ids
+
+
+def augment_zoom(image, polygons, zoom_in_vs_out_weights, zoom_padding):
+    zoom_in = random.choices([True, False], weights=zoom_in_vs_out_weights, k=1)[0]
+    if zoom_in:
+        image, polygons = zoom_in_image_and_polygons(image, polygons, zoom_padding[0], zoom_padding[1])
+    else:
+        image, polygons = zoom_out_image_and_polygons(image, polygons, zoom_padding[2], zoom_padding[3])
+    return image, polygons
+
+def augment_rotate(image, polygons, rotation_random_vs_90_weights):
+    (h, w) = image.shape[:2]
+    center = (w / 2, h / 2)
+    rotation_degree = get_rotation_angle(rotation_random_vs_90_weights)
+    image = rotate_image(image, rotation_degree)
+    new_w, new_h = image.shape[1], image.shape[0]
+    new_center = (new_w / 2, new_h / 2)
+    polygons = [rotate_polygon(polygon, rotation_degree, center, new_center, (w, h), (new_w, new_h)) for polygon in polygons]
+    return image, polygons
+
+def augment_overlay(image, polygons, coco_image_folder, overlay_min_max_scale):
+    coco_images = [os.path.join(coco_image_folder, f) for f in os.listdir(coco_image_folder) if os.path.isfile(os.path.join(coco_image_folder, f))]
+    coco_image_path = random.choice(coco_images)
+    coco_image = cv2.imread(coco_image_path)
+    image, polygons = overlay_detections_on_coco(coco_image, image, polygons, overlay_min_max_scale[0], overlay_min_max_scale[1])
+    return image, polygons
+
+def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, mirror_weights, crop_weights,
+                  overlay_weights, rotate_weights, rotation_random_vs_90_weights, 
+                  overlay_min_max_scale, maintain_aspect_ratio_weights, 
+                  zoom_weights, zoom_in_vs_out_weights, zoom_padding, coco_image_folder, augmentation_order=None):
+    
+    # Define the default augmentation order if none is provided
+    if augmentation_order is None:
+        augmentation_order = ["mirror", "crop", "zoom", "rotate", "overlay"]
+    
+    # Create a mapping of augmentation types to their functions and parameters
+    augmentation_functions = {
+        "mirror": {
+            "func": lambda img, polys: augment_mirror(img, polys) if random.choices([True, False], weights=mirror_weights, k=1)[0] else (img, polys),
+            "skip_key": 'Mirror',
+            "needs_polygons": True
+        },
+        "crop": {
+            "func": lambda img, polys: augment_crop(img, polys, class_ids, maintain_aspect_ratio_weights) if random.choices([True, False], weights=crop_weights, k=1)[0] else (img, polys, class_ids),
+            "skip_key": 'Crop',
+            "needs_polygons": True
+        },
+        "zoom": {
+            "func": lambda img, polys: augment_zoom(img, polys, zoom_in_vs_out_weights, zoom_padding) if random.choices([True, False], weights=zoom_weights, k=1)[0] else (img, polys),
+            "skip_key": 'Zoom',
+            "needs_polygons": True
+        },
+        "rotate": {
+            "func": lambda img, polys: augment_rotate(img, polys, rotation_random_vs_90_weights) if random.choices([True, False], weights=rotate_weights, k=1)[0] else (img, polys),
+            "skip_key": 'Rotate',
+            "needs_polygons": True
+        },
+        "overlay": {
+            "func": lambda img, polys: augment_overlay(img, polys, coco_image_folder, overlay_min_max_scale) if coco_image_folder and random.choices([True, False], weights=overlay_weights, k=1)[0] else (img, polys),
+            "skip_key": 'Overlay',
+            "needs_polygons": True
+        }
+    }
+    
+    # Apply augmentations in the specified order
+    for aug_type in augmentation_order:
+        if aug_type in augmentation_functions:
+            aug_info = augmentation_functions[aug_type]
+            
+            # Skip this augmentation if specified for current subfolder
+            if current_subfolder in skip_augmentations[aug_info["skip_key"]]:
+                continue
+                
+            # Skip if we need polygons but don't have any
+            if aug_info["needs_polygons"] and not polygons:
+                continue
+                
+            # Apply the augmentation
+            if aug_type == "crop":
+                # Crop is special because it returns class_ids too
+                image, polygons, class_ids = aug_info["func"](image, polygons)
+            else:
+                image, polygons = aug_info["func"](image, polygons)
+    
+    # Apply Albumentations after all geometric transformations
+    image = apply_albumentations(image)
 
     formatted_polygons = [['{}'.format(class_id), *polygon] for class_id, polygon in zip(class_ids, polygons)]
     return image, formatted_polygons

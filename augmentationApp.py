@@ -177,6 +177,23 @@ def process_single_image_worker(args):
                          for i in range(1, len(parts), 2)]
                 polygons.append(coords)
         
+        # Extract the subset of parameters needed for augmentation
+        augmentation_params = {
+            'skip_augmentations': params['skip_augmentations'],
+            'mirror_weights': params['mirror_weights'],
+            'crop_weights': params['crop_weights'],
+            'overlay_weights': params['overlay_weights'],
+            'rotate_weights': params['rotate_weights'],
+            'rotation_random_vs_90_weights': params['rotation_random_vs_90_weights'],
+            'overlay_min_max_scale': params['overlay_min_max_scale'],
+            'maintain_aspect_ratio_weights': params['maintain_aspect_ratio_weights'],
+            'zoom_weights': params['zoom_weights'],
+            'zoom_in_vs_out_weights': params['zoom_in_vs_out_weights'],
+            'zoom_padding': params['zoom_padding'],
+            'coco_image_folder': params['coco_image_folder'],
+            'augmentation_order': params.get('augmentation_order')
+        }
+        
         # Perform augmentation
         augmented_image, augmented_polygons = augment_image(
             image=image,
@@ -185,14 +202,7 @@ def process_single_image_worker(args):
             class_ids=class_ids,
             h=h,
             w=w,
-            **{k: params[k] for k in [
-                'skip_augmentations', 'mirror_weights', 'crop_weights',
-                'overlay_weights', 'rotate_weights',
-                'rotation_random_vs_90_weights',
-                'overlay_min_max_scale', 'maintain_aspect_ratio_weights',
-                'zoom_weights', 'zoom_in_vs_out_weights', 'zoom_padding',
-                'coco_image_folder'
-            ]}
+            **augmentation_params  # Pass all parameters at once
         )
         
         # Save augmented image
@@ -1370,6 +1380,8 @@ class AugmentDatasetGUI(QWidget):
     def get_augmentation_order(self):
         """Get the current order of augmentations from the sliders list"""
         augmentation_order = []
+        valid_augmentation_types = ["mirror", "crop", "zoom", "rotate", "overlay"]
+        
         for i in range(self.sliders_list.count()):
             item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
             for j in range(item_widget.layout().count()):
@@ -1377,9 +1389,12 @@ class AugmentDatasetGUI(QWidget):
                 if isinstance(widget, QSlider):
                     for attr_name, attr_value in vars(self).items():
                         if attr_value is widget and attr_name in self.slider_to_augmentation_type:
-                            augmentation_order.append(self.slider_to_augmentation_type[attr_name])
+                            aug_type = self.slider_to_augmentation_type[attr_name]
+                            if aug_type in valid_augmentation_types:
+                                augmentation_order.append(aug_type)
                             break
                     break
+        
         return augmentation_order
 
     def display_image_and_polygons(self, image, polygons):
@@ -1454,7 +1469,6 @@ class AugmentDatasetGUI(QWidget):
             # Store label information for later drawing
             labels.append((class_id, points[0]))
 
-        # Draw all labels
         # Draw all labels
         if self.show_labels:
             for class_id, position in labels:
@@ -1737,6 +1751,7 @@ class AugmentDatasetGUI(QWidget):
 
         # Get the current augmentation order
         augmentation_order = self.get_augmentation_order()
+        print(f"Applying augmentations in order: {augmentation_order}")
 
         # Load the image
         image = cv2.imread(self.current_image_path)
