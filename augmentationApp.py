@@ -130,7 +130,7 @@ def process_batch(batch: List[BatchItem]) -> List[tuple[bool, str]]:
 def process_single_image_worker(args):
     """Standalone function for processing a single image."""
     try:
-        relative_path, label_path, subfolder, params = args
+        relative_path, label_path, subfolder, params, overlay_image = args
         
         # Set consistent seed for this file
         seed = int(hashlib.md5(relative_path.encode()).hexdigest(), 16) % (2**32)
@@ -190,11 +190,11 @@ def process_single_image_worker(args):
             'zoom_weights': params['zoom_weights'],
             'zoom_in_vs_out_weights': params['zoom_in_vs_out_weights'],
             'zoom_padding': params['zoom_padding'],
-            'coco_image_folder': params['coco_image_folder'],
             'augmentation_order': params.get('augmentation_order')
         }
         
         # Perform augmentation
+        from augment_data import augment_image
         augmented_image, augmented_polygons = augment_image(
             image=image,
             polygons=polygons,
@@ -202,6 +202,7 @@ def process_single_image_worker(args):
             class_ids=class_ids,
             h=h,
             w=w,
+            coco_image=overlay_image,  # Pass the overlay image directly
             **augmentation_params  # Pass all parameters at once
         )
         
@@ -233,11 +234,50 @@ class AugmentationWorker(QThread):
         self.total_files = 0
         self.processed_files = 0
         self.semaphore = None
+        self.overlay_images = []
         
+        # Preload overlay images if directory is provided
+        if self.params.get('coco_image_folder') and os.path.exists(self.params['coco_image_folder']):
+            self.preload_overlay_images()
+        
+    def preload_overlay_images(self):
+        """Preload overlay images from the specified directory."""
+        try:
+            image_folder = self.params['coco_image_folder']
+            self.progress_log.emit(f"Preloading overlay images from {image_folder}...")
+            
+            # Get list of image files
+            image_files = [f for f in os.listdir(image_folder) 
+                           if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
+                           and os.path.isfile(os.path.join(image_folder, f))]
+            
+            # Load a sample of images (up to 100 to prevent memory issues)
+            sample_size = min(100, len(image_files))
+            sampled_files = random.sample(image_files, sample_size) if sample_size > 0 else []
+            
+            for filename in sampled_files:
+                try:
+                    img_path = os.path.join(image_folder, filename)
+                    img = cv2.imread(img_path)
+                    if img is not None:
+                        self.overlay_images.append(img)
+                except Exception as e:
+                    self.progress_log.emit(f"Error loading overlay image {filename}: {str(e)}")
+            
+            self.progress_log.emit(f"Successfully preloaded {len(self.overlay_images)} overlay images")
+        except Exception as e:
+            self.error.emit(f"Error preloading overlay images: {str(e)}")
+            self.overlay_images = []
+
+    def get_random_overlay_image(self):
+        """Get a random overlay image from the preloaded collection."""
+        if not self.overlay_images:
+            return None
+        return random.choice(self.overlay_images)
+    
     def calculate_optimal_workers(self):
         """Calculate the optimal number of worker processes based on system resources."""
         try:
-            
             # Get system memory information
             mem = psutil.virtual_memory()
             available_memory = mem.available
@@ -297,9 +337,15 @@ class AugmentationWorker(QThread):
                     if self.is_cancelled:
                         break
                     
+                    # Create a copy of the parameters and add a random overlay image 
+                    task_params = self.params.copy()
+                    
+                    # Set to None by default; the worker function will handle this
+                    task_params['coco_image'] = None
+                    
                     future = executor.submit(
                         process_single_image_worker,
-                        (relative_path, label_path, subfolder, self.params)
+                        (relative_path, label_path, subfolder, task_params, self.get_random_overlay_image())
                     )
                     futures.append(future)
                 
@@ -1732,12 +1778,7 @@ class AugmentDatasetGUI(QWidget):
         QMessageBox.critical(self, "Error", f"An error occurred during augmentation: {error_msg}")
 
     def augment_current_image(self):
-        if not self.dataset_root or not self.overlay_image_dir:
-            overlay_weights = [0, 100]
-        else:
-            overlay_weights = [self.overlay_slider.value(), 100 - self.overlay_slider.value()]
-        
-        if not self.current_image_path:
+        if not self.dataset_root:
             QMessageBox.warning(self, "Input Required", "Please select an image to augment.")
             return
         
@@ -1748,14 +1789,23 @@ class AugmentDatasetGUI(QWidget):
         maintain_aspect_ratio_weights = [self.maintain_aspect_ratio_slider.value(), 100 - self.maintain_aspect_ratio_slider.value()]
         zoom_in_vs_out_weights = [self.zoom_in_vs_out_slider.value(), 100 - self.zoom_in_vs_out_slider.value()]
         rotation_random_vs_90_weights = [self.rotation_random_vs_90_slider.value(), 100 - self.rotation_random_vs_90_slider.value()]
+        overlay_weights = [self.overlay_slider.value(), 100 - self.overlay_slider.value()] if self.overlay_image_dir else [0, 100]
 
         # Get the current augmentation order
         augmentation_order = self.get_augmentation_order()
-        print(f"Applying augmentations in order: {augmentation_order}")
-
+        
         # Load the image
         image = cv2.imread(self.current_image_path)
         (h, w) = image.shape[:2]
+
+        # Get a random overlay image if available
+        overlay_image = None
+        if self.overlay_image_dir and os.path.exists(self.overlay_image_dir):
+            overlay_files = [f for f in os.listdir(self.overlay_image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            if overlay_files:
+                random_file = random.choice(overlay_files)
+                overlay_path = os.path.join(self.overlay_image_dir, random_file)
+                overlay_image = cv2.imread(overlay_path)
 
         # Load the label file if it exists
         label_path = self.label_paths.get(self.current_image_path)
@@ -1796,8 +1846,8 @@ class AugmentDatasetGUI(QWidget):
             zoom_weights, 
             zoom_in_vs_out_weights,
             self.zoom_padding,
-            self.overlay_image_dir if self.overlay_image_dir else "",
-            augmentation_order=augmentation_order  # Add the new parameter
+            overlay_image,  # Pass the image directly instead of the folder path
+            augmentation_order=augmentation_order
         )
 
         (new_h, new_w) = augmented_image.shape[:2]

@@ -322,7 +322,7 @@ def pad_image_and_adjust_polygons(cropped_image, adjusted_polygons, original_dim
 
     return padded_image, shifted_polygons
 
-def overlay_detections_on_coco(coco_image, image, detection_polygons, min_scale=0.1, max_scale=1.0):
+def overlay_detections_on_coco(coco_image, image, detection_polygons, min_scale=0.3, max_scale=1.0):
     adjusted_polygons = []
     
     # Initialize an empty mask for all detections
@@ -491,17 +491,17 @@ def augment_rotate(image, polygons, rotation_random_vs_90_weights):
     polygons = [rotate_polygon(polygon, rotation_degree, center, new_center, (w, h), (new_w, new_h)) for polygon in polygons]
     return image, polygons
 
-def augment_overlay(image, polygons, coco_image_folder, overlay_min_max_scale):
-    coco_images = [os.path.join(coco_image_folder, f) for f in os.listdir(coco_image_folder) if os.path.isfile(os.path.join(coco_image_folder, f))]
-    coco_image_path = random.choice(coco_images)
-    coco_image = cv2.imread(coco_image_path)
-    image, polygons = overlay_detections_on_coco(coco_image, image, polygons, overlay_min_max_scale[0], overlay_min_max_scale[1])
+def augment_overlay(image, polygons, coco_image, overlay_min_max_scale):
+    image, polygons = overlay_detections_on_coco(coco_image, image, polygons, 
+                                               overlay_min_max_scale[0], 
+                                               overlay_min_max_scale[1])
     return image, polygons
 
-def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, mirror_weights, crop_weights,
-                  overlay_weights, rotate_weights, rotation_random_vs_90_weights, 
-                  overlay_min_max_scale, maintain_aspect_ratio_weights, 
-                  zoom_weights, zoom_in_vs_out_weights, zoom_padding, coco_image_folder, augmentation_order=None):
+def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, 
+                 mirror_weights, crop_weights, overlay_weights, rotate_weights, 
+                 rotation_random_vs_90_weights, overlay_min_max_scale, 
+                 maintain_aspect_ratio_weights, zoom_weights, zoom_in_vs_out_weights, 
+                 zoom_padding, coco_image, augmentation_order=None):
     
     # Define the default augmentation order if none is provided
     if augmentation_order is None:
@@ -530,7 +530,7 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
             "needs_polygons": True
         },
         "overlay": {
-            "func": lambda img, polys: augment_overlay(img, polys, coco_image_folder, overlay_min_max_scale) if coco_image_folder and random.choices([True, False], weights=overlay_weights, k=1)[0] else (img, polys),
+            "func": lambda img, polys: augment_overlay(img, polys, coco_image, overlay_min_max_scale) if coco_image is not None and random.choices([True, False], weights=overlay_weights, k=1)[0] else (img, polys),
             "skip_key": 'Overlay',
             "needs_polygons": True
         }
@@ -556,8 +556,5 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
             else:
                 image, polygons = aug_info["func"](image, polygons)
     
-    # Apply Albumentations after all geometric transformations
-    image = apply_albumentations(image)
-
     formatted_polygons = [['{}'.format(class_id), *polygon] for class_id, polygon in zip(class_ids, polygons)]
     return image, formatted_polygons
