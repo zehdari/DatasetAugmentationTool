@@ -962,27 +962,44 @@ class AugmentDatasetGUI(QWidget):
         try:
             if item.column() == 1:  # Check if the clicked cell is in the color column
                 row = item.row()
-                class_id = self.class_colors_table.item(row, 0).text()
-                class_id = self.label_to_id[class_id]
-                color = QColorDialog.getColor(self.class_colors[class_id], self, "Choose Class Color")
-                if color.isValid():
-                    self.class_colors[class_id] = color
-                    self.update_class_colors_table()
-                    self.show_image()
-        except:
+                class_label = self.class_colors_table.item(row, 0).text()
+                
+                # Find the class_id that corresponds to this label
+                class_id = None
+                for cid, label in self.id_to_label.items():
+                    if str(label) == class_label:
+                        class_id = cid
+                        break
+                
+                # If we couldn't find the ID through the mapping, 
+                # the label might be the raw class ID itself
+                if class_id is None:
+                    class_id = class_label
+                    
+                # Make sure the class_id exists in class_colors
+                if class_id in self.class_colors:
+                    color = QColorDialog.getColor(self.class_colors[class_id], self, "Choose Class Color")
+                    if color.isValid():
+                        self.class_colors[class_id] = color
+                        self.update_class_colors_table()
+                        self.show_image()
+        except Exception as e:
+            print(f"Error in on_color_cell_clicked: {str(e)}")
             pass
 
     def update_class_colors_table(self):
         self.class_colors_table.setRowCount(len(self.class_colors))
-        for row, (class_id, color) in enumerate(self.class_colors.items()):
-
-            class_id = self.id_to_label[class_id]
+        row = 0
+        for class_id, color in self.class_colors.items():
+            # Get label for class ID, defaulting to class_id itself if not found
+            class_label = self.id_to_label.get(class_id, class_id)
             
-            class_item = QTableWidgetItem(class_id)
+            class_item = QTableWidgetItem(str(class_label))
             color_item = QTableWidgetItem()
             color_item.setBackground(color)
             self.class_colors_table.setItem(row, 0, class_item)
             self.class_colors_table.setItem(row, 1, color_item)
+            row += 1
 
     def change_class_color(self):
         selected_items = self.class_colors_table.selectedItems()
@@ -1006,6 +1023,10 @@ class AugmentDatasetGUI(QWidget):
 
         self.clear_layout(self.stats_layout)
 
+        # Reset class mappings
+        self.id_to_label = {}
+        self.label_to_id = {}
+        
         class_counter = Counter()
         image_counter = 0
         instance_counter = 0
@@ -1080,9 +1101,12 @@ class AugmentDatasetGUI(QWidget):
         classes = class_names
         counts = list(class_counter.values())
 
-        # Assign colors to classes
-        self.class_colors = {class_id: QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for class_id in self.id_to_label.keys()}
-        colors = [self.class_colors[class_id] for class_id in self.id_to_label.keys()]
+        # Assign colors to classes - ensure all class IDs from counter have colors
+        self.class_colors = {class_id: QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) 
+                            for class_id in class_counter.keys()}
+        
+        # Adjust the colors list to match class_counter.keys() order
+        colors = [self.class_colors[class_id] for class_id in class_counter.keys()]
 
         bars = ax.bar(classes, counts, color=[self.rgb_to_hex(c) for c in colors])
         ax.set_xlabel('Classes')
@@ -1176,9 +1200,14 @@ class AugmentDatasetGUI(QWidget):
             self.output_dir_set = True
 
     def scan_folders(self):
-        # Clear previous skip augmentation inputs
+        # Clear previous data structures
         for key in self.skip_augmentations.keys():
             self.skip_augmentations[key] = []
+        
+        # Clear class mappings
+        self.id_to_label = {}
+        self.label_to_id = {}
+        self.class_colors = {}
 
         # Scan dataset for folders and images
         folders = set()
@@ -1221,37 +1250,12 @@ class AugmentDatasetGUI(QWidget):
         # Sort images numerically
         self.image_paths.sort(key=self.natural_keys)
 
-        self.generate_class_colors()  # Generate class colors after loading dataset
-
+        # Parse YAML labels if available
         yaml_labels = parse_dataset_yaml(self.dataset_root)
-    
-        # Store the YAML labels as an instance attribute for later use
         self.yaml_labels = yaml_labels
 
-        # If YAML is found, update class colors without losing existing color assignments
-        if yaml_labels:
-            # Create a mapping that preserves existing colors
-            new_id_to_labels = {}
-            
-            for class_id, label in self.id_to_label.items():
-                # Convert int keys to strings to match existing class_colors format
-                try:
-                    # Try to convert numeric class_id to a name from YAML
-                    label = yaml_labels[int(class_id)] if int(class_id) < len(yaml_labels) else class_id
-                    new_id_to_labels[int(class_id)] = str(label)
-                except (ValueError, IndexError):
-                    # If conversion fails, keep the original class_id
-                    new_id_to_labels[class_id] = class_id
-            
-            self.id_to_label = new_id_to_labels
-            
-            # Update table and visualization
-            self.update_class_colors_table()
-            self.show_image()  # Refresh the image with new labels
-            
-            # Update dataset stats graph to use YAML labels
-            if hasattr(self, 'get_dataset_stats'):
-                self.get_dataset_stats()
+        # Generate dataset stats which will also initialize class_colors
+        self.get_dataset_stats()
 
 
     def toggle_skip_all(self, state, row):
