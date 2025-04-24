@@ -287,44 +287,40 @@ def adjust_polygons_for_crop(polygons, crop_line, keep, orientation):
         final_polygons.append(adjusted_polygon)
     return final_polygons
     
-def pad_image_and_adjust_polygons(cropped_image, adjusted_polygons,
-                                  original_dimensions):
+def pad_image_and_adjust_polygons(cropped_image, adjusted_polygons, original_dimensions):
     cropped_height, cropped_width = cropped_image.shape[:2]
-    original_heigh, original_width = original_dimensions
-
-    # Decide how much to pad
-    padding_vertical = max(0, original_heigh - cropped_height)
-    padding_horizontal = max(0, original_width - cropped_width)
-
-    top    = padding_vertical // 2
-    bottom = padding_vertical - top
-    left   = padding_horizontal // 2
-    right  = padding_horizontal - left
-
-    # Build the padded image
+    original_height, original_width = original_dimensions
+    
+    # Calculate padding needed to restore original dimensions
+    pad_vertical = (original_height - cropped_height) // 2
+    pad_horizontal = (original_width - cropped_width) // 2
+    
+    # Pad the cropped image evenly on all sides
     padded_image = cv2.copyMakeBorder(
-        cropped_image, top, bottom, left, right,
+        cropped_image, pad_vertical, pad_vertical, pad_horizontal, pad_horizontal,
         cv2.BORDER_CONSTANT, value=[0, 0, 0])
-
-    # Shift the polygons by the same offsets added to the image
+    
+    # Adjust polygon coordinates using the same logic as the old version
     shifted_polygons = []
-    for poly in adjusted_polygons:
-        new_poly = []
-        for x, y in poly:
-            # Go from normalized to absolute in the cropped image
-            x_abs = clamp(x) * cropped_width
-            y_abs = clamp(y) * cropped_height
+    for polygon in adjusted_polygons:
+        new_polygon = []
+        for x, y in polygon:
+            # Clamp, denormalize, translate, and renormalize
+            x_clamped, y_clamped = clamp(x), clamp(y)
+            abs_x, abs_y = x_clamped * cropped_width, y_clamped * cropped_height
+        
+            # Careful translation considering padding
+            translated_x = abs_x + pad_horizontal if pad_horizontal > 0 else abs_x
+            translated_y = abs_y + pad_vertical if pad_vertical > 0 else abs_y
 
-            # Translate by the padding that was added on the left/top
-            x_abs += left
-            y_abs += top
+            # Renormalize to the original dimensions
+            new_x = translated_x / original_width
+            new_y = translated_y / original_height
 
-            # Renormalize in the final (padded) image size
-            new_poly.append((x_abs / original_width, y_abs / original_heigh))
-        shifted_polygons.append(new_poly)
+            new_polygon.append((clamp(new_x), clamp(new_y)))
+        shifted_polygons.append(new_polygon)
 
     return padded_image, shifted_polygons
-
 
 def overlay_detections_on_coco(coco_image, image, detection_polygons, min_scale=0.1, max_scale=1.0):
     adjusted_polygons = []
