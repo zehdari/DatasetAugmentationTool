@@ -25,118 +25,78 @@ import json
 import yaml
 import psutil
 import threading
+from functools import partial
 
-@dataclass
-class BatchItem:
-    root: str
-    file: str
-    current_subfolder: str
-    current_augmented_image_dir: str
-    current_augmented_label_dir: str
-    params: Dict[str, Any]
-
-def process_batch(batch: List[BatchItem]) -> List[tuple[bool, str]]:
-    """Process a batch of images in parallel"""
-    results = []
-    for item in batch:
-        try:
-            # Setup paths
-            img_path = os.path.join(item.root, item.file)
-            lbl_path = os.path.join(item.params['label_dir'],
-                                os.path.relpath(img_path, item.params['image_dir'])
-                                ).replace('.jpg', '.txt').replace('.jpeg', '.txt').replace('.png', '.txt')
-                                
-            # Check if we should skip this image
-            augmented_img_path = os.path.join(item.current_augmented_image_dir, item.file)
-            augmented_lbl_path = os.path.join(item.current_augmented_label_dir,
-                                            item.file.replace('.jpg', '.txt')
-                                            .replace('.jpeg', '.txt')
-                                            .replace('.png', '.txt'))
-                                            
-            if item.params.get('skip_existing', True) and os.path.exists(augmented_img_path) and os.path.exists(augmented_lbl_path):
-                results.append((True, f"Skipped existing: {item.file}"))
-                continue
-
-            # Read and process image
-            image = cv2.imread(img_path)
-            if image is None:
-                results.append((False, f"Could not read image: {img_path}"))
-                continue
-                
-            (h, w) = image.shape[:2]
-
-            # Process labels
-            if os.path.exists(lbl_path):
-                with open(lbl_path, 'r') as f:
-                    lines = f.readlines()
-                    polygons = []
-                    class_ids = []
-                    for line in lines:
-                        parts = line.strip().split()
-                        class_id = parts[0]
-                        class_ids.append(class_id)
-                        polygon = [(float(parts[i]), float(parts[i + 1])) 
-                                for i in range(1, len(parts), 2)]
-                        polygons.append(polygon)
-            else:
-                results.append((False, f"Label file not found: {lbl_path}"))
-                continue
-
-            # Extract augmentation parameters
-            augmentation_params = {
-                'skip_augmentations': item.params['skip_augmentations'],
-                'mirror_weights': item.params['mirror_weights'],
-                'crop_weights': item.params['crop_weights'],
-                'overlay_weights': item.params['overlay_weights'],
-                'rotate_weights': item.params['rotate_weights'],
-                'rotation_random_vs_90_weights': item.params['rotation_random_vs_90_weights'],
-                'overlay_min_max_scale': item.params['overlay_min_max_scale'],
-                'maintain_aspect_ratio_weights': item.params['maintain_aspect_ratio_weights'],
-                'zoom_weights': item.params['zoom_weights'],
-                'zoom_in_vs_out_weights': item.params['zoom_in_vs_out_weights'],
-                'zoom_padding': item.params['zoom_padding'],
-                'coco_image_folder': item.params['coco_image_folder']
-            }
-
-            # Perform augmentation
-            from augment_data import augment_image
-            augmented_image, augmented_polygons = augment_image(
-                image=image,
-                polygons=polygons,
-                current_subfolder=item.current_subfolder,
-                class_ids=class_ids,
-                h=h,
-                w=w,
-                **augmentation_params
-            )
-
-            # Save results
-            os.makedirs(os.path.dirname(augmented_img_path), exist_ok=True)
-            cv2.imwrite(augmented_img_path, augmented_image)
-            
-            os.makedirs(os.path.dirname(augmented_lbl_path), exist_ok=True)
-            with open(augmented_lbl_path, 'w') as f:
-                for polygon in augmented_polygons:
-                    line = ' '.join(map(str, [polygon[0]] + 
-                                    [coord for point in polygon[1:] for coord in point]))
-                    f.write(line + '\n')
-            
-            results.append((True, f"Successfully processed: {item.file}"))
-            
-        except Exception as e:
-            results.append((False, f"Error processing {item.file}: {str(e)}"))
-            
-    return results
-
-def process_single_image_worker(args):
-    """Standalone function for processing a single image."""
+def prepare_overlay_indices(image_folder, num_workers):
+    """Prepare shuffled indices of overlay images for each worker."""
     try:
-        relative_path, label_path, subfolder, params, overlay_image = args
+        # Get list of all image files
+        image_files = [f for f in os.listdir(image_folder) 
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
+                    and os.path.isfile(os.path.join(image_folder, f))]
+        
+        if not image_files:
+            return [], []
+        
+        # Create shuffled indices
+        indices = list(range(len(image_files)))
+        random.shuffle(indices)
+        
+        # Split indices among workers
+        worker_indices = []
+        chunk_size = max(1, len(indices) // num_workers)
+        
+        for i in range(0, len(indices), chunk_size):
+            worker_chunk = indices[i:i+chunk_size]
+            worker_indices.append(worker_chunk)
+        
+        # If we didn't create enough chunks for all workers, add empty ones
+        while len(worker_indices) < num_workers:
+            worker_indices.append([])
+        
+        # If we have more chunks than workers, merge the last ones
+        if len(worker_indices) > num_workers:
+            extra = worker_indices[num_workers:]
+            worker_indices[num_workers-1].extend([idx for chunk in extra for idx in chunk])
+            worker_indices = worker_indices[:num_workers]
+        
+        return image_files, worker_indices
+    except Exception as e:
+        print(f"Error preparing overlay indices: {str(e)}")
+        return [], []
+
+def get_worker_overlay_image(worker_id, image_folder, image_files, worker_indices):
+    """Get a random overlay image for a specific worker from its assigned subset."""
+    try:
+        if not worker_indices or worker_id >= len(worker_indices) or not worker_indices[worker_id]:
+            return None
+        
+        # Select a random index from this worker's subset
+        random_idx = random.choice(worker_indices[worker_id])
+        filename = image_files[random_idx]
+        
+        # Load the image
+        img_path = os.path.join(image_folder, filename)
+        img = cv2.imread(img_path)
+        return img
+    except Exception as e:
+        print(f"Error getting overlay image for worker {worker_id}: {str(e)}")
+        return None
+
+def process_single_image_worker_with_id(args, worker_id, image_folder, image_files, worker_indices):
+    """Worker function with worker ID for getting assigned overlay images."""
+    try:
+        relative_path, label_path, subfolder, params, _ = args
         
         # Set consistent seed for this file
         seed = int(hashlib.md5(relative_path.encode()).hexdigest(), 16) % (2**32)
         random.seed(seed)
         np.random.seed(seed)
+        
+        # Get overlay image from this worker's assigned subset
+        overlay_image = None
+        if image_folder and image_files and worker_id < len(worker_indices):
+            overlay_image = get_worker_overlay_image(worker_id, image_folder, image_files, worker_indices)
         
         # Construct full paths
         img_path = os.path.join(params['image_dir'], relative_path)
@@ -222,202 +182,6 @@ def process_single_image_worker(args):
     except Exception as e:
         return False, f"Error processing {relative_path}: {str(e)}"
 
-class AsynchronousImageLoader:
-    """Manages asynchronous loading of image batches using double-buffering."""
-    
-    def __init__(self, image_folder, batch_size, progress_log_callback):
-        self.image_folder = image_folder
-        self.batch_size = batch_size
-        self.progress_log = progress_log_callback
-        
-        # Image buffers (double-buffering approach)
-        self.current_buffer = []  # Currently used buffer
-        self.next_buffer = []     # Next buffer being prepared
-        
-        # Thread control
-        self.loader_thread = None
-        self.is_loading = False
-        self.shutdown = False
-        self.lock = threading.Lock()
-        
-        # Image tracking
-        self.all_image_files = []
-        self.used_image_indices = set()
-        self.image_usage_counter = 0
-        self.load_threshold = int(batch_size * 0.7)  # Start loading next batch at 70% usage
-        
-        # Initialize
-        self.init_image_list()
-    
-    def init_image_list(self):
-        """Initialize the list of all available images."""
-        try:
-            if not os.path.exists(self.image_folder):
-                self.progress_log(f"Image folder not found: {self.image_folder}")
-                return
-                
-            self.all_image_files = [f for f in os.listdir(self.image_folder) 
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
-                        and os.path.isfile(os.path.join(self.image_folder, f))]
-            
-            self.progress_log(f"Found {len(self.all_image_files)} potential overlay images")
-            
-            # Initial load of first buffer
-            self.load_buffer(self.current_buffer)
-            self.progress_log(f"Initial buffer loaded with {len(self.current_buffer)} images")
-            
-            # Start loading next buffer immediately
-            self.start_async_loading()
-        except Exception as e:
-            self.progress_log(f"Error initializing image list: {str(e)}")
-    
-    def load_buffer(self, buffer):
-        """Load a batch of images into the specified buffer."""
-        buffer.clear()
-        
-        # Check if we have enough unused images
-        available_indices = set(range(len(self.all_image_files))) - self.used_image_indices
-        
-        # If we don't have enough unused images, reset the tracking
-        if len(available_indices) < self.batch_size:
-            self.progress_log("Refreshing image selection pool")
-            self.used_image_indices.clear()
-            available_indices = set(range(len(self.all_image_files)))
-        
-        # Select random images
-        batch_size = min(self.batch_size, len(available_indices))
-        batch_indices = random.sample(list(available_indices), batch_size)
-        
-        # Mark as used
-        self.used_image_indices.update(batch_indices)
-        
-        # Load images
-        for idx in batch_indices:
-            if self.shutdown:  # Check for shutdown signal
-                break
-                
-            filename = self.all_image_files[idx]
-            try:
-                img_path = os.path.join(self.image_folder, filename)
-                img = cv2.imread(img_path)
-                if img is not None:
-                    buffer.append(img)
-            except Exception as e:
-                self.progress_log(f"Error loading image {filename}: {str(e)}")
-    
-    def start_async_loading(self):
-        """Start asynchronous loading of the next buffer."""
-        # Use atomic test-and-set to prevent race conditions
-        should_start = False
-        
-        with self.lock:
-            # Only start if not already loading
-            if not self.is_loading:
-                self.is_loading = True
-                should_start = True
-        
-        # If we should start loading, create and start the thread outside the lock
-        if should_start:            
-            # Start new thread for loading
-            self.progress_log("Starting next batch load")
-            self.loader_thread = threading.Thread(target=self._async_load_next_buffer)
-            self.loader_thread.daemon = True  # Make thread exit when main program exits
-            self.loader_thread.start()
-            return True
-        return False
-    
-    def _async_load_next_buffer(self):
-        """Thread function to load the next buffer."""
-        try:
-            # Load images into next buffer
-            self.load_buffer(self.next_buffer)
-            
-            # Mark loading as complete
-            with self.lock:
-                self.is_loading = False
-                
-            self.progress_log(f"Next batch of {len(self.next_buffer)} images ready")
-        except Exception as e:
-            self.progress_log(f"Error in async loading: {str(e)}")
-            # Make sure we always clear the loading flag, even on error
-            with self.lock:
-                self.is_loading = False
-    
-    def get_random_image(self):
-        """Get a random image from the current buffer and manage buffer rotation."""
-        with self.lock:
-            # Check if we have images in current buffer
-            if not self.current_buffer:
-                # If next buffer has images, swap them
-                if self.next_buffer:
-                    self.progress_log("Swapping to next buffer immediately")
-                    self.current_buffer, self.next_buffer = self.next_buffer, []
-                    self.image_usage_counter = 0
-                    
-                    # Start loading next buffer if not already loading
-                    if not self.is_loading:
-                        # Release lock before starting thread to avoid deadlock
-                        should_start = True
-                    else:
-                        should_start = False
-                else:
-                    # No images in either buffer, try emergency load
-                    self.progress_log("No images available, performing emergency load")
-                    try:
-                        self.load_buffer(self.current_buffer)
-                    except Exception as e:
-                        self.progress_log(f"Emergency load failed: {str(e)}")
-                    should_start = False
-                
-                # If we need to start loading outside the lock
-                if should_start:
-                    # We'll start loading after releasing the lock
-                    pass
-                
-                # Still no images? Return None
-                if not self.current_buffer:
-                    return None
-            
-            # Increment usage counter
-            self.image_usage_counter += 1
-            
-            # Check if we need to start loading next batch
-            should_start_loading = (self.image_usage_counter >= self.load_threshold and not self.is_loading)
-            
-            # Check if we need to swap buffers
-            should_swap = (self.image_usage_counter >= len(self.current_buffer) and len(self.next_buffer) > 0)
-            
-            # Get image while we have the lock
-            image = random.choice(self.current_buffer) if self.current_buffer else None
-        
-        # Outside the lock, perform any needed operations
-        if should_swap:
-            self.progress_log("All images used, swapping buffers")
-            with self.lock:
-                self.current_buffer, self.next_buffer = self.next_buffer, []
-                self.image_usage_counter = 0
-                should_start_loading = not self.is_loading
-        
-        # Start loading next batch if needed (outside the lock)
-        if should_start_loading:
-            self.progress_log(f"Usage threshold reached ({self.image_usage_counter}/{len(self.current_buffer)}), starting next batch load")
-            self.start_async_loading()
-        
-        return image
-    
-    def shutdown_loader(self):
-        """Shut down the async loader and clean up resources."""
-        self.shutdown = True
-        
-        # Wait for loader thread to finish if it's running
-        if self.loader_thread and self.loader_thread.is_alive():
-            self.loader_thread.join(timeout=1.0)  # Wait up to 1 second for clean shutdown
-            
-        # Clear buffers to free memory
-        with self.lock:
-            self.current_buffer.clear()
-            self.next_buffer.clear()
-
 class AugmentationWorker(QThread):
     progress = pyqtSignal(int)
     progress_log = pyqtSignal(str)
@@ -430,183 +194,6 @@ class AugmentationWorker(QThread):
         self.is_cancelled = False
         self.total_files = 0
         self.processed_files = 0
-        self.semaphore = None
-        
-        # Calculate optimal batch sizes based on system memory
-        self.calculate_memory_adaptive_parameters()
-        
-        # Initialize asynchronous image loader if overlay directory is provided
-        if self.params.get('coco_image_folder') and os.path.exists(self.params['coco_image_folder']):
-            self.progress_log.emit(f"Initializing async image loader with batch size {self.batch_size}")
-            self.image_loader = AsynchronousImageLoader(
-                self.params['coco_image_folder'], 
-                self.batch_size,
-                self.progress_log.emit
-            )
-        else:
-            self.image_loader = None
-    
-    def calculate_memory_adaptive_parameters(self):
-        """Calculate batch size and other parameters based on available system memory."""
-        try:
-            # Get memory information
-            mem = psutil.virtual_memory()
-            total_memory = mem.total
-            available_memory = mem.available
-            
-            # Memory allocation for overlay images (set to 20% of available memory)
-            overlay_memory_allocation = available_memory * 0.2
-            
-            # Estimate average image size if overlay directory is provided
-            avg_image_size = self.estimate_average_image_size()
-            
-            if avg_image_size > 0:
-                # Calculate batch size based on available memory and average image size
-                # Add 20% overhead for other operations
-                max_images = int(overlay_memory_allocation / (avg_image_size * 1.2))
-                
-                # We need two buffers, so divide by 2 and add some margin
-                max_images = int(max_images / 2 * 0.9)
-                
-                # Clamp batch size between reasonable values
-                self.batch_size = max(20, min(300, max_images))
-                
-                self.progress_log.emit(f"Memory-adaptive parameters: batch_size={self.batch_size}")
-            else:
-                # Default values if calculation fails
-                self.batch_size = 100
-                self.progress_log.emit("Using default batch parameters: batch_size=100")
-        except Exception as e:
-            # Fall back to default values on error
-            self.batch_size = 100
-            self.progress_log.emit(f"Error calculating memory parameters: {str(e)}")
-            self.progress_log.emit("Using default batch parameters: batch_size=100")
-    
-    def estimate_average_image_size(self):
-        """Estimate the average size of overlay images in bytes."""
-        try:
-            if not self.params.get('coco_image_folder') or not os.path.exists(self.params['coco_image_folder']):
-                return 0
-                
-            image_folder = self.params['coco_image_folder']
-            image_files = [f for f in os.listdir(image_folder) 
-                          if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
-                          and os.path.isfile(os.path.join(image_folder, f))]
-            
-            if not image_files:
-                return 0
-                
-            # Sample up to 10 random images to estimate average size
-            sample_size = min(10, len(image_files))
-            sample_files = random.sample(image_files, sample_size)
-            
-            # Calculate file sizes
-            sizes = []
-            for file in sample_files:
-                file_path = os.path.join(image_folder, file)
-                # Get file size on disk
-                file_size = os.path.getsize(file_path)
-                
-                # Load image to estimate in-memory size
-                try:
-                    img = cv2.imread(file_path)
-                    if img is not None:
-                        # Calculate in-memory size (height × width × channels × bytes per channel)
-                        mem_size = img.nbytes
-                        # Use the larger of file size or memory size
-                        sizes.append(max(file_size, mem_size))
-                except Exception:
-                    # If loading fails, just use file size
-                    sizes.append(file_size)
-            
-            # Calculate average size with outlier protection
-            if sizes:
-                if len(sizes) > 3:
-                    # Remove outliers for more accurate estimation
-                    sizes.sort()
-                    sizes = sizes[1:-1]  # Remove smallest and largest
-                    
-                avg_size = sum(sizes) / len(sizes)
-                self.progress_log.emit(f"Average image size: {avg_size/1024:.1f} KB")
-                return avg_size
-            return 0
-        except Exception as e:
-            self.progress_log.emit(f"Error estimating image size: {str(e)}")
-            return 0
-
-    def preload_overlay_images(self):
-        """Preload overlay images from the specified directory."""
-        try:
-            image_folder = self.params['coco_image_folder']
-            self.progress_log.emit(f"Preloading overlay images from {image_folder}...")
-            
-            # Get list of all image files
-            self.all_image_files = [f for f in os.listdir(image_folder) 
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
-                        and os.path.isfile(os.path.join(image_folder, f))]
-            
-            # Initialize tracking variables
-            self.used_image_indices = set()
-            
-            # Load initial batch of images
-            self.load_next_batch_of_images()
-            
-            self.progress_log.emit(f"Successfully preloaded {len(self.overlay_images)} overlay images")
-        except Exception as e:
-            self.error.emit(f"Error preloading overlay images: {str(e)}")
-            self.overlay_images = []
-
-    def load_next_batch_of_images(self):
-        """Load a new batch of overlay images."""
-        try:
-            image_folder = self.params['coco_image_folder']
-            
-            # Clear current images to free memory
-            self.overlay_images = []
-            
-            # Reset the usage counter when loading a new batch
-            self.image_usage_counter = 0
-            
-            # Figure out which images haven't been used
-            available_indices = set(range(len(self.all_image_files))) - self.used_image_indices
-            
-            # If all images have been used, reset the tracking
-            if not available_indices or len(available_indices) < self.batch_size:
-                self.progress_log.emit("All overlay images used, refreshing selection...")
-                self.used_image_indices = set()
-                available_indices = set(range(len(self.all_image_files)))
-            
-            # Select batch_size random indices from available images
-            batch_size = min(self.batch_size, len(available_indices))
-            batch_indices = random.sample(list(available_indices), batch_size)
-            
-            # Mark these indices as used
-            self.used_image_indices.update(batch_indices)
-            
-            # Load the images
-            for idx in batch_indices:
-                filename = self.all_image_files[idx]
-                try:
-                    img_path = os.path.join(image_folder, filename)
-                    img = cv2.imread(img_path)
-                    if img is not None:
-                        self.overlay_images.append(img)
-                except Exception as e:
-                    self.progress_log.emit(f"Error loading overlay image {filename}: {str(e)}")
-            
-            self.progress_log.emit(f"Loaded {len(self.overlay_images)} new overlay images")
-            
-            # Force garbage collection after loading new batch
-            gc.collect()
-            
-        except Exception as e:
-            self.error.emit(f"Error loading batch of overlay images: {str(e)}")
-
-    def get_random_overlay_image(self):
-        """Get a random overlay image using the asynchronous loader."""
-        if self.image_loader:
-            return self.image_loader.get_random_image()
-        return None
     
     def calculate_optimal_workers(self):
         """Calculate the optimal number of worker processes based on system resources."""
@@ -647,32 +234,8 @@ class AugmentationWorker(QThread):
             self.progress_log.emit(f"Error calculating workers: {str(e)}")
             return max(1, (os.cpu_count() or 2) // 2)  # Default to half of available logical cores
     
-    def calculate_processing_batch_size(self):
-        """Calculate the optimal batch size for task processing."""
-        try:
-            # Get available memory (in GB)
-            available_memory = psutil.virtual_memory().available / (1024 * 1024 * 1024)
-            
-            # Base batch size on available memory
-            if available_memory > 16:  # More than 16GB available
-                batch_size = 100
-            elif available_memory > 8:  # 8-16GB available
-                batch_size = 50
-            elif available_memory > 4:  # 4-8GB available
-                batch_size = 25
-            else:  # Less than 4GB available
-                batch_size = 10
-                
-            # Cap batch size to 20% of total files for small datasets
-            max_batch = max(10, int(self.total_files * 0.2))
-            return min(batch_size, max_batch)
-            
-        except Exception:
-            # Default to reasonable batch size if calculation fails
-            return min(50, self.total_files)
-    
     def run(self):
-        """Execute the augmentation process with optimized parallel processing."""
+        """Execute the augmentation process with worker-specific overlay images."""
         try:
             # Collect image-label pairs
             image_label_pairs = self.collect_image_label_pairs()
@@ -693,49 +256,72 @@ class AugmentationWorker(QThread):
             self.processed_files = 0
             
             # Calculate optimal processing batch size
-            processing_batch_size = self.calculate_processing_batch_size()
+            processing_batch_size = min(100, max(10, self.total_files // 10))
             self.progress_log.emit(f"Processing in batches of {processing_batch_size} files")
             
-            # Process images in parallel with proper resource management
+            # Prepare overlay image distribution
+            image_files = []
+            worker_indices = []
+            
+            if self.params.get('coco_image_folder') and os.path.exists(self.params['coco_image_folder']):
+                self.progress_log.emit(f"Preparing overlay image distribution for {num_workers} workers")
+                image_files, worker_indices = prepare_overlay_indices(
+                    self.params['coco_image_folder'], 
+                    num_workers
+                )
+                self.progress_log.emit(f"Found {len(image_files)} overlay images, distributed among {len(worker_indices)} worker groups")
+                
+                # Log distribution details
+                for i, indices in enumerate(worker_indices):
+                    self.progress_log.emit(f"Worker {i}: {len(indices)} images")
+            
+            # Process images in parallel with worker-specific overlay images
             with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
                 # Submit tasks in smaller batches to control memory usage
-                remaining_tasks = list(enumerate(image_label_pairs))
+                remaining_tasks = list(image_label_pairs)
+                worker_id = 0
                 
                 while remaining_tasks and not self.is_cancelled:
                     current_batch = remaining_tasks[:processing_batch_size]
                     remaining_tasks = remaining_tasks[processing_batch_size:]
                     
                     futures = []
-                    for idx, (relative_path, label_path, subfolder) in current_batch:
+                    for task_idx, (relative_path, label_path, subfolder) in enumerate(current_batch):
                         if self.is_cancelled:
                             break
                         
                         # Create a copy of the parameters
                         task_params = self.params.copy()
                         
-                        # Get a random overlay image from async loader
-                        overlay_img = self.get_random_overlay_image()
+                        # Assign worker ID (cycling through available workers)
+                        task_worker_id = worker_id % num_workers
+                        worker_id += 1
                         
-                        # Submit the task with a unique identifier
-                        future = executor.submit(
-                            process_single_image_worker,
-                            (relative_path, label_path, subfolder, task_params, overlay_img)
+                        # Create a worker-specific processing function with partial
+                        worker_func = partial(
+                            process_single_image_worker_with_id,
+                            worker_id=task_worker_id,
+                            image_folder=self.params.get('coco_image_folder', ''),
+                            image_files=image_files,
+                            worker_indices=worker_indices
                         )
-                        # Store task index with future for tracking
-                        futures.append((idx, future))
-                    
-                    # Create a mapping of futures to their indices for tracking
-                    future_to_idx = {f: i for i, f in futures}
+                        
+                        # Submit the task
+                        future = executor.submit(
+                            worker_func,
+                            (relative_path, label_path, subfolder, task_params, None)
+                        )
+                        futures.append(future)
                     
                     # Process results as they complete
-                    for future in concurrent.futures.as_completed([f for _, f in futures]):
+                    for future in concurrent.futures.as_completed(futures):
                         if self.is_cancelled:
                             break
                         
                         try:
                             success, message = future.result()
                             
-                            # Update progress indicators - these run in main thread context
+                            # Update progress indicators
                             self.processed_files += 1
                             progress = int(self.processed_files * 100 / self.total_files)
                             self.progress.emit(progress)
@@ -745,7 +331,7 @@ class AugmentationWorker(QThread):
                             else:
                                 self.progress_log.emit(f"Error: {message}")
                             
-                            # Force UI update by yielding to event loop for a moment
+                            # Force UI update
                             QApplication.processEvents()
                                 
                         except Exception as e:
@@ -763,10 +349,8 @@ class AugmentationWorker(QThread):
             self.error.emit(str(e))
         finally:
             # Clean up resources
-            if self.image_loader:
-                self.image_loader.shutdown_loader()
             gc.collect()
-
+    
     def atoi(self, text):
         """Helper function for natural sort order"""
         return int(text) if text.isdigit() else text
@@ -801,10 +385,6 @@ class AugmentationWorker(QThread):
         """Cancel the augmentation process."""
         self.is_cancelled = True
         self.progress_log.emit("\nCancelling...")
-        
-        # Shut down image loader if active
-        if hasattr(self, 'image_loader') and self.image_loader:
-            self.image_loader.shutdown_loader()
     
 class ImageCache:
     def __init__(self, max_size=100):
