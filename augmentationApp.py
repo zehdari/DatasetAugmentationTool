@@ -430,6 +430,10 @@ class AugmentationWorker(QThread):
         self.is_cancelled = False
         self.total_files = 0
         self.processed_files = 0
+        # New attributes for tracking stats
+        self.augmented_files = 0  # Track files actually augmented (not skipped)
+        self.start_time = None
+        self.end_time = None
         self.semaphore = None
         
         # Calculate optimal batch sizes based on system memory
@@ -674,6 +678,9 @@ class AugmentationWorker(QThread):
     def run(self):
         """Execute the augmentation process with optimized parallel processing."""
         try:
+            # Record start time
+            self.start_time = time.time()
+            
             # Collect image-label pairs
             image_label_pairs = self.collect_image_label_pairs()
             
@@ -741,6 +748,9 @@ class AugmentationWorker(QThread):
                             self.progress.emit(progress)
                             
                             if success:
+                                # If the message doesn't contain "Skipped existing", increment the augmented files counter
+                                if "Skipped existing" not in message:
+                                    self.augmented_files += 1
                                 self.progress_log.emit(f"[{self.processed_files}/{self.total_files}] {message}")
                             else:
                                 self.progress_log.emit(f"Error: {message}")
@@ -756,12 +766,17 @@ class AugmentationWorker(QThread):
                     gc.collect()
             
             if not self.is_cancelled:
+                self.end_time = time.time()
                 self.progress_log.emit("\nProcessing complete!")
                 self.finished.emit()
                 
         except Exception as e:
+            self.end_time = time.time()
             self.error.emit(str(e))
         finally:
+            # If end_time wasn't set for some reason, set it now
+            if self.end_time is None:
+                self.end_time = time.time()
             # Clean up resources
             if self.image_loader:
                 self.image_loader.shutdown_loader()
@@ -2097,10 +2112,26 @@ class AugmentDatasetGUI(QWidget):
         # Create layout for the progress dialog
         layout = QVBoxLayout(self.progress_dialog)
         
-        # Info labels
+        # Top header with progress and time
+        header_layout = QHBoxLayout()
+        
+        # Progress label on the left
         self.progress_label = QLabel("Starting...")
-        self.time_label = QLabel("Estimated time remaining: Calculating...")
-        layout.addWidget(self.progress_label)
+        header_layout.addWidget(self.progress_label, 1)  # Give it stretch factor
+        
+        # Elapsed time in the top right with label
+        elapsed_layout = QHBoxLayout()
+        elapsed_time_descriptor = QLabel("Elapsed Time:")
+        self.elapsed_time_label = QLabel("0:00")
+        self.elapsed_time_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        elapsed_layout.addWidget(elapsed_time_descriptor)
+        elapsed_layout.addWidget(self.elapsed_time_label)
+        header_layout.addLayout(elapsed_layout)
+        
+        layout.addLayout(header_layout)
+        
+        # Time remaining estimate
+        self.time_label = QLabel("Estimated remaining: Calculating...")
         layout.addWidget(self.time_label)
         
         # Add progress bar
@@ -2129,7 +2160,7 @@ class AugmentDatasetGUI(QWidget):
         # Get the current augmentation order
         augmentation_order = self.get_augmentation_order()
 
-        # Prepare parameters (same as before)
+        # Prepare parameters
         params = {
             'image_dir': os.path.join(self.dataset_root, 'images'),
             'label_dir': os.path.join(self.dataset_root, 'labels'),
@@ -2152,7 +2183,7 @@ class AugmentDatasetGUI(QWidget):
                                     100 - self.zoom_in_vs_out_slider.value()],
             'zoom_padding': self.zoom_padding,
             'coco_image_folder': self.overlay_image_dir if self.overlay_image_dir else "",
-            'augmentation_order': augmentation_order  # Add the new parameter
+            'augmentation_order': augmentation_order
         }
 
         # Create and configure worker
@@ -2165,6 +2196,7 @@ class AugmentDatasetGUI(QWidget):
         
         # Initial time for ETA calculation
         self.start_time = time.time()
+        self.last_time_update = self.start_time
         self.is_cancelled = False
         
         # Start processing
@@ -2175,29 +2207,63 @@ class AugmentDatasetGUI(QWidget):
         """Update progress and time estimates"""
         if not self.is_cancelled and value > 0:
             try:
-                elapsed_time = time.time() - self.start_time
-                estimated_total_time = elapsed_time * 100 / value
-                remaining_time = estimated_total_time - elapsed_time
+                current_time = time.time()
+                elapsed_time = current_time - self.start_time
                 
-                # Format time remaining
-                if remaining_time < 60:
-                    time_str = f"{int(remaining_time)} seconds"
-                elif remaining_time < 3600:
-                    time_str = f"{int(remaining_time / 60)} minutes"
-                else:
-                    time_str = f"{remaining_time / 3600:.1f} hours"
+                # Always update the elapsed time counter
+                elapsed_str = self.format_elapsed_time(elapsed_time)
+                self.elapsed_time_label.setText(elapsed_str)
                 
-                self.time_label.setText(f"Estimated time remaining: {time_str}")
+                # Always update the progress percentage
                 self.progress_label.setText(f"Progress: {value}%")
+                
+                # Only update the estimated remaining time every second
+                if current_time - self.last_time_update >= 1.0:
+                    estimated_total_time = elapsed_time * 100 / value
+                    remaining_time = estimated_total_time - elapsed_time
+                    
+                    # Format time remaining
+                    if remaining_time < 60:
+                        time_str = f"{int(remaining_time)} seconds"
+                    elif remaining_time < 3600:
+                        time_str = f"{int(remaining_time / 60)} minutes"
+                    else:
+                        time_str = f"{remaining_time / 3600:.1f} hours"
+                    
+                    # Update remaining time estimate
+                    self.time_label.setText(f"Estimated remaining: {time_str}")
+                    
+                    # Update the last update time
+                    self.last_time_update = current_time
+                    
             except RuntimeError:
                 # Widget has been deleted, ignore the update
                 pass
-            
+
     def handle_completion(self):
         """Handle successful completion of the augmentation process"""
         if not self.is_cancelled:
             self.progress_dialog.close()
-            QMessageBox.information(self, "Complete", "Augmentation process completed successfully!")
+            
+            # Calculate total elapsed time
+            elapsed_time = self.worker.end_time - self.worker.start_time
+            formatted_time = self.format_elapsed_time(elapsed_time)
+            
+            # Get number of processed and augmented files
+            total_processed = self.worker.processed_files
+            total_augmented = self.worker.augmented_files
+            total_skipped = total_processed - total_augmented
+            
+            # Create a detailed message with statistics
+            message = (
+                f"Augmentation process completed successfully!\n\n"
+                f"Total time: {formatted_time}\n"
+                f"Files processed: {total_processed}\n"
+                f"Files augmented: {total_augmented}\n"
+                f"Files skipped: {total_skipped}\n"
+            )
+            
+            QMessageBox.information(self, "Augmentation Complete", message)
 
     def handle_cancellation(self):
         """Handle user cancellation of the augmentation process"""
@@ -2209,6 +2275,17 @@ class AugmentDatasetGUI(QWidget):
     def handle_augmentation_error(self, error_msg):
         QMessageBox.critical(self, "Error", f"An error occurred during augmentation: {error_msg}")
 
+    def format_elapsed_time(self, seconds):
+        """Format elapsed time into HH:MM:SS format."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:d}:{secs:02d}"
+        
     def augment_current_image(self):
         if not self.dataset_root:
             QMessageBox.warning(self, "Input Required", "Please select an image to augment.")
