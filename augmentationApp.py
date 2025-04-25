@@ -3,6 +3,7 @@ import os
 import re
 import random
 import time
+import queue
 from collections import Counter
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QFileDialog, QSlider, QMessageBox, QGroupBox, QFormLayout,
@@ -222,201 +223,76 @@ def process_single_image_worker(args):
     except Exception as e:
         return False, f"Error processing {relative_path}: {str(e)}"
 
-class AsynchronousImageLoader:
-    """Manages asynchronous loading of image batches using double-buffering."""
-    
-    def __init__(self, image_folder, batch_size, progress_log_callback):
+class OverlayProvider:
+    """
+    Keeps up to `max_buffers` overlay images pre-loaded in a thread-safe queue.
+    Images are cycled without repeats until the entire pool has been used.
+    """
+
+    def __init__(self, image_folder: str, max_buffers: int = 10):
         self.image_folder = image_folder
-        self.batch_size = batch_size
-        self.progress_log = progress_log_callback
-        
-        # Image buffers (double-buffering approach)
-        self.current_buffer = []  # Currently used buffer
-        self.next_buffer = []     # Next buffer being prepared
-        
-        # Thread control
-        self.loader_thread = None
-        self.is_loading = False
-        self.shutdown = False
-        self.lock = threading.Lock()
-        
-        # Image tracking
-        self.all_image_files = []
-        self.used_image_indices = set()
-        self.image_usage_counter = 0
-        self.load_threshold = int(batch_size * 0.7)  # Start loading next batch at 70% usage
-        
-        # Initialize
-        self.init_image_list()
-    
-    def init_image_list(self):
-        """Initialize the list of all available images."""
-        try:
-            if not os.path.exists(self.image_folder):
-                self.progress_log(f"Image folder not found: {self.image_folder}")
-                return
-                
-            self.all_image_files = [f for f in os.listdir(self.image_folder) 
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
-                        and os.path.isfile(os.path.join(self.image_folder, f))]
-            
-            self.progress_log(f"Found {len(self.all_image_files)} potential overlay images")
-            
-            # Initial load of first buffer
-            self.load_buffer(self.current_buffer)
-            self.progress_log(f"Initial buffer loaded with {len(self.current_buffer)} images")
-            
-            # Start loading next buffer immediately
-            self.start_async_loading()
-        except Exception as e:
-            self.progress_log(f"Error initializing image list: {str(e)}")
-    
-    def load_buffer(self, buffer):
-        """Load a batch of images into the specified buffer."""
-        buffer.clear()
-        
-        # Check if we have enough unused images
-        available_indices = set(range(len(self.all_image_files))) - self.used_image_indices
-        
-        # If we don't have enough unused images, reset the tracking
-        if len(available_indices) < self.batch_size:
-            self.progress_log("Refreshing image selection pool")
-            self.used_image_indices.clear()
-            available_indices = set(range(len(self.all_image_files)))
-        
-        # Select random images
-        batch_size = min(self.batch_size, len(available_indices))
-        batch_indices = random.sample(list(available_indices), batch_size)
-        
-        # Mark as used
-        self.used_image_indices.update(batch_indices)
-        
-        # Load images
-        for idx in batch_indices:
-            if self.shutdown:  # Check for shutdown signal
-                break
-                
-            filename = self.all_image_files[idx]
+        # list of all files in the folder
+        self.files = [f for f in os.listdir(image_folder)
+                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                      and os.path.isfile(os.path.join(image_folder, f))]
+        if not self.files:
+            raise RuntimeError(f"No images found in {image_folder}")
+
+        # a shuffled pool of indices, so we never repeat until exhausted
+        self._lock = threading.Lock()
+        self.idx_pool = list(range(len(self.files)))
+        random.shuffle(self.idx_pool)
+
+        # a bounded queue that holds CV2 images
+        self.q = queue.Queue(maxsize=max_buffers)
+        self._shutdown = threading.Event()
+
+        # start the background loader
+        self.loader = threading.Thread(target=self._loader, daemon=True)
+        self.loader.start()
+
+    def _loader(self):
+        while not self._shutdown.is_set():
             try:
-                img_path = os.path.join(self.image_folder, filename)
-                img = cv2.imread(img_path)
-                if img is not None:
-                    buffer.append(img)
-            except Exception as e:
-                self.progress_log(f"Error loading image {filename}: {str(e)}")
-    
-    def start_async_loading(self):
-        """Start asynchronous loading of the next buffer."""
-        # Use atomic test-and-set to prevent race conditions
-        should_start = False
-        
-        with self.lock:
-            # Only start if not already loading
-            if not self.is_loading:
-                self.is_loading = True
-                should_start = True
-        
-        # If we should start loading, create and start the thread outside the lock
-        if should_start:            
-            # Start new thread for loading
-            self.progress_log("Starting next batch load")
-            self.loader_thread = threading.Thread(target=self._async_load_next_buffer)
-            self.loader_thread.daemon = True  # Make thread exit when main program exits
-            self.loader_thread.start()
-            return True
-        return False
-    
-    def _async_load_next_buffer(self):
-        """Thread function to load the next buffer."""
+                # block until there’s space in the queue
+                img = self._load_one()
+                self.q.put(img, timeout=0.1)
+            except queue.Full:
+                # queue is full, retry until shutdown
+                continue
+
+    def _load_one(self):
+        # refill & reshuffle when we’ve used all
+        with self._lock:
+            if not self.idx_pool:
+                self.idx_pool = list(range(len(self.files)))
+                random.shuffle(self.idx_pool)
+            idx = self.idx_pool.pop()
+
+        path = os.path.join(self.image_folder, self.files[idx])
+        img = cv2.imread(path)
+        if img is None:
+            # if a file failed to read, skip it
+            return self._load_one()
+        return img
+
+    def get_overlay(self, timeout=None):
+        """
+        Retrieve the next pre-loaded image (blocks until one’s available).
+        Returns None only if `timeout` is given and expires.
+        """
         try:
-            # Load images into next buffer
-            self.load_buffer(self.next_buffer)
-            
-            # Mark loading as complete
-            with self.lock:
-                self.is_loading = False
-                
-            self.progress_log(f"Next batch of {len(self.next_buffer)} images ready")
-        except Exception as e:
-            self.progress_log(f"Error in async loading: {str(e)}")
-            # Make sure we always clear the loading flag, even on error
-            with self.lock:
-                self.is_loading = False
-    
-    def get_random_image(self):
-        """Get a random image from the current buffer and manage buffer rotation."""
-        with self.lock:
-            # Check if we have images in current buffer
-            if not self.current_buffer:
-                # If next buffer has images, swap them
-                if self.next_buffer:
-                    self.progress_log("Swapping to next buffer immediately")
-                    self.current_buffer, self.next_buffer = self.next_buffer, []
-                    self.image_usage_counter = 0
-                    
-                    # Start loading next buffer if not already loading
-                    if not self.is_loading:
-                        # Release lock before starting thread to avoid deadlock
-                        should_start = True
-                    else:
-                        should_start = False
-                else:
-                    # No images in either buffer, try emergency load
-                    self.progress_log("No images available, performing emergency load")
-                    try:
-                        self.load_buffer(self.current_buffer)
-                    except Exception as e:
-                        self.progress_log(f"Emergency load failed: {str(e)}")
-                    should_start = False
-                
-                # If we need to start loading outside the lock
-                if should_start:
-                    # We'll start loading after releasing the lock
-                    pass
-                
-                # Still no images? Return None
-                if not self.current_buffer:
-                    return None
-            
-            # Increment usage counter
-            self.image_usage_counter += 1
-            
-            # Check if we need to start loading next batch
-            should_start_loading = (self.image_usage_counter >= self.load_threshold and not self.is_loading)
-            
-            # Check if we need to swap buffers
-            should_swap = (self.image_usage_counter >= len(self.current_buffer) and len(self.next_buffer) > 0)
-            
-            # Get image while we have the lock
-            image = random.choice(self.current_buffer) if self.current_buffer else None
-        
-        # Outside the lock, perform any needed operations
-        if should_swap:
-            self.progress_log("All images used, swapping buffers")
-            with self.lock:
-                self.current_buffer, self.next_buffer = self.next_buffer, []
-                self.image_usage_counter = 0
-                should_start_loading = not self.is_loading
-        
-        # Start loading next batch if needed (outside the lock)
-        if should_start_loading:
-            self.progress_log(f"Usage threshold reached ({self.image_usage_counter}/{len(self.current_buffer)}), starting next batch load")
-            self.start_async_loading()
-        
-        return image
-    
-    def shutdown_loader(self):
-        """Shut down the async loader and clean up resources."""
-        self.shutdown = True
-        
-        # Wait for loader thread to finish if it's running
-        if self.loader_thread and self.loader_thread.is_alive():
-            self.loader_thread.join(timeout=1.0)  # Wait up to 1 second for clean shutdown
-            
-        # Clear buffers to free memory
-        with self.lock:
-            self.current_buffer.clear()
-            self.next_buffer.clear()
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def close(self):
+        """Shut down the loader thread and drain the queue."""
+        self._shutdown.set()
+        self.loader.join()
+        # clear out any images
+        while not self.q.empty():
+            self.q.get_nowait()
 
 class AugmentationWorker(QThread):
     progress = pyqtSignal(int)
@@ -440,13 +316,9 @@ class AugmentationWorker(QThread):
         self.calculate_memory_adaptive_parameters()
         
         # Initialize asynchronous image loader if overlay directory is provided
-        if self.params.get('coco_image_folder') and os.path.exists(self.params['coco_image_folder']):
-            self.progress_log.emit(f"Initializing async image loader with batch size {self.batch_size}")
-            self.image_loader = AsynchronousImageLoader(
-                self.params['coco_image_folder'], 
-                self.batch_size,
-                self.progress_log.emit
-            )
+        if self.params.get('coco_image_folder'):
+            self.progress_log.emit(f"Initializing overlay queue with 3 buffers")
+            self.image_loader = OverlayProvider(self.params['coco_image_folder'], max_buffers=3)
         else:
             self.image_loader = None
     
@@ -609,7 +481,7 @@ class AugmentationWorker(QThread):
     def get_random_overlay_image(self):
         """Get a random overlay image using the asynchronous loader."""
         if self.image_loader:
-            return self.image_loader.get_random_image()
+            return self.image_loader.get_overlay()
         return None
     
     def calculate_optimal_workers(self):
@@ -779,7 +651,7 @@ class AugmentationWorker(QThread):
                 self.end_time = time.time()
             # Clean up resources
             if self.image_loader:
-                self.image_loader.shutdown_loader()
+                self.image_loader.close()
             gc.collect()
 
     def atoi(self, text):
@@ -819,7 +691,7 @@ class AugmentationWorker(QThread):
         
         # Shut down image loader if active
         if hasattr(self, 'image_loader') and self.image_loader:
-            self.image_loader.shutdown_loader()
+            self.image_loader.close()
     
 class ImageCache:
     def __init__(self, max_size=100):

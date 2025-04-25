@@ -512,7 +512,7 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
         "mirror": {
             "func": lambda img, polys: augment_mirror(img, polys) if random.choices([True, False], weights=mirror_weights, k=1)[0] else (img, polys),
             "skip_key": 'Mirror',
-            "needs_polygons": True
+            "needs_polygons": False
         },
         "crop": {
             "func": lambda img, polys: augment_crop(img, polys, class_ids, maintain_aspect_ratio_weights) if random.choices([True, False], weights=crop_weights, k=1)[0] else (img, polys, class_ids),
@@ -527,7 +527,7 @@ def augment_image(image, polygons, current_subfolder, class_ids, h, w, skip_augm
         "rotate": {
             "func": lambda img, polys: augment_rotate(img, polys, rotation_random_vs_90_weights) if random.choices([True, False], weights=rotate_weights, k=1)[0] else (img, polys),
             "skip_key": 'Rotate',
-            "needs_polygons": True
+            "needs_polygons": False
         },
         "overlay": {
             "func": lambda img, polys: augment_overlay(img, polys, coco_image, overlay_min_max_scale) if coco_image is not None and random.choices([True, False], weights=overlay_weights, k=1)[0] else (img, polys),
