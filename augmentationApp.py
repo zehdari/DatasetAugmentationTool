@@ -2091,39 +2091,49 @@ class AugmentDatasetGUI(QWidget):
         self.progress_dialog.exec()  # Show the dialog and wait for completion
 
     def update_progress(self, value):
-        """Update progress and time estimates"""
-        if not self.is_cancelled and value > 0:
-            try:
-                current_time = time.time()
-                elapsed_time = current_time - self.start_time
-                
-                # Always update the elapsed time counter
-                elapsed_str = self.format_elapsed_time(elapsed_time)
-                self.elapsed_time_label.setText(elapsed_str)
-                
-                # Always update the progress percentage
-                self.progress_label.setText(f"Progress: {value}%")
-                
-                # Only update the estimated remaining time every second
-                if current_time - self.last_time_update >= 1.0:
-                    total_estimated = elapsed_time * 100.0 / value
-                    remaining_time = max(0.0, total_estimated - elapsed_time)
+        """Update progress and time estimates using linear extrapolation."""
+        # Skip if cancelled or no progress yet
+        if self.is_cancelled or value <= 0:
+            return
 
-                    # Format remaining time just like elapsed
-                    remaining_str = self.format_elapsed_time(remaining_time)
-                    self.time_label.setText(f"Estimated remaining: {remaining_str}")
+        try:
+            current_time = time.time()
+            elapsed = current_time - self.start_time
 
-                    self.last_time_update = current_time
-                    
-            except RuntimeError:
-                # Widget has been deleted, ignore the update
-                pass
+            # 1) update elapsed display
+            self.elapsed_time_label.setText(self.format_elapsed_time(elapsed))
+
+            # 2) update progress %
+            self.progress_label.setText(f"Progress: {value}%")
+
+            # 3) throttle ETA updates to once a second
+            if current_time - self.last_time_update >= 1.0:
+                done = self.worker.processed_files
+                total = self.worker.total_files
+
+                if done > 0 and total > done:
+                    avg_per_file = elapsed / done
+                    remaining = (total - done) * avg_per_file
+                else:
+                    remaining = 0.0
+
+                self.time_label.setText(
+                    f"Estimated remaining: {self.format_elapsed_time(remaining)}"
+                )
+                self.last_time_update = current_time
+
+        except RuntimeError:
+            # Widget deleted, ignore
+            pass
+
 
     def handle_completion(self):
         """Handle successful completion of the augmentation process"""
         if not self.is_cancelled:
             # Clear the image cache so that re-displayed images are freshly loaded
             self.image_cache.clear()
+
+            self.show_image()
 
             # Close the progress dialog
             self.progress_dialog.close()
