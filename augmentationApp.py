@@ -246,16 +246,49 @@ class AugmentationWorker(QThread):
             image_folder = self.params['coco_image_folder']
             self.progress_log.emit(f"Preloading overlay images from {image_folder}...")
             
-            # Get list of image files
-            image_files = [f for f in os.listdir(image_folder) 
-                           if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
-                           and os.path.isfile(os.path.join(image_folder, f))]
+            # Get list of all image files
+            self.all_image_files = [f for f in os.listdir(image_folder) 
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg')) 
+                        and os.path.isfile(os.path.join(image_folder, f))]
             
-            # Load a sample of images (up to 100 to prevent memory issues)
-            sample_size = min(100, len(image_files))
-            sampled_files = random.sample(image_files, sample_size) if sample_size > 0 else []
+            # Initialize tracking variables
+            self.used_image_indices = set()
             
-            for filename in sampled_files:
+            # Load initial batch of images
+            self.load_next_batch_of_images()
+            
+            self.progress_log.emit(f"Successfully preloaded {len(self.overlay_images)} overlay images")
+        except Exception as e:
+            self.error.emit(f"Error preloading overlay images: {str(e)}")
+            self.overlay_images = []
+
+    def load_next_batch_of_images(self):
+        """Load a new batch of overlay images."""
+        try:
+            image_folder = self.params['coco_image_folder']
+            
+            # Clear current images to free memory
+            self.overlay_images = []
+            
+            # Figure out which images haven't been used
+            available_indices = set(range(len(self.all_image_files))) - self.used_image_indices
+            
+            # If all images have been used, reset the tracking
+            if not available_indices:
+                self.progress_log.emit("All overlay images used, refreshing selection...")
+                self.used_image_indices = set()
+                available_indices = set(range(len(self.all_image_files)))
+            
+            # Select batch_size random indices from available images
+            batch_size = min(100, len(available_indices))
+            batch_indices = random.sample(list(available_indices), batch_size)
+            
+            # Mark these indices as used
+            self.used_image_indices.update(batch_indices)
+            
+            # Load the images
+            for idx in batch_indices:
+                filename = self.all_image_files[idx]
                 try:
                     img_path = os.path.join(image_folder, filename)
                     img = cv2.imread(img_path)
@@ -264,15 +297,19 @@ class AugmentationWorker(QThread):
                 except Exception as e:
                     self.progress_log.emit(f"Error loading overlay image {filename}: {str(e)}")
             
-            self.progress_log.emit(f"Successfully preloaded {len(self.overlay_images)} overlay images")
+            self.progress_log.emit(f"Loaded {len(self.overlay_images)} new overlay images")
         except Exception as e:
-            self.error.emit(f"Error preloading overlay images: {str(e)}")
-            self.overlay_images = []
+            self.error.emit(f"Error loading batch of overlay images: {str(e)}")
 
     def get_random_overlay_image(self):
         """Get a random overlay image from the preloaded collection."""
         if not self.overlay_images:
-            return None
+            if not hasattr(self, 'all_image_files') or not self.all_image_files:
+                return None
+            self.load_next_batch_of_images()
+            if not self.overlay_images:  # Still empty after reload attempt
+                return None
+        
         return random.choice(self.overlay_images)
     
     def calculate_optimal_workers(self):
@@ -644,35 +681,57 @@ class AugmentDatasetGUI(QWidget):
                 
     def reorder_sliders_from_config(self, order):
         """Reorder sliders based on the order saved in the config"""
-        # Create a mapping of augmentation type to list item index
-        current_order = {}
+        # Get current information about all sliders
+        slider_info = []
         for i in range(self.sliders_list.count()):
-            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
-            for j in range(item_widget.layout().count()):
-                widget = item_widget.layout().itemAt(j).widget()
-                if isinstance(widget, QSlider):
+            item = self.sliders_list.item(i)
+            widget = self.sliders_list.itemWidget(item)
+            
+            # Find which slider this corresponds to
+            for j in range(widget.layout().count()):
+                child_widget = widget.layout().itemAt(j).widget()
+                if isinstance(child_widget, QSlider):
+                    # Find which attribute this slider corresponds to
                     for attr_name, attr_value in vars(self).items():
-                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
+                        if attr_value is child_widget and attr_name in self.slider_to_augmentation_type:
                             aug_type = self.slider_to_augmentation_type[attr_name]
-                            current_order[aug_type] = i
+                            # Store current value
+                            value = child_widget.value()
+                            slider_info.append({
+                                'aug_type': aug_type,
+                                'slider_attr': attr_name,
+                                'value': value,
+                                'index': i
+                            })
                             break
                     break
         
-        # Reorder based on saved configuration
-        for i, aug_type in enumerate(order):
-            if aug_type in current_order:
-                current_idx = current_order[aug_type]
-                if current_idx != i:
-                    # Move the item to the correct position
-                    item = self.sliders_list.takeItem(current_idx)
-                    self.sliders_list.insertItem(i, item)
-                    self.sliders_list.setItemWidget(item, self.sliders_list.itemWidget(item))
-                    
-                    # Update the current_order mapping for remaining items
-                    for k in current_order:
-                        if current_order[k] > current_idx:
-                            current_order[k] -= 1
-                    current_order[aug_type] = i
+        # Create a mapping from augmentation types to their info
+        aug_type_to_info = {info['aug_type']: info for info in slider_info}
+        
+        # Temporarily remove all sliders
+        for i in range(self.sliders_list.count() - 1, -1, -1):
+            self.sliders_list.takeItem(i)
+        
+        # Re-add sliders in the desired order
+        for aug_type in order:
+            if aug_type in aug_type_to_info:
+                info = aug_type_to_info[aug_type]
+                
+                # Find the corresponding slider_info entry
+                for slider_item in self.slider_data:
+                    if slider_item['object'] == info['slider_attr']:
+                        # Re-add the slider with proper values
+                        self.add_slider_to_list(
+                            slider_item["name"], 
+                            slider_item["object"], 
+                            slider_item["value_object"]
+                        )
+                        
+                        # Set the value to match the original
+                        slider = getattr(self, slider_item["object"])
+                        slider.setValue(info['value'])
+                        break
 
     def init_augmentation_settings_tab(self):
         layout = QVBoxLayout()
@@ -842,8 +901,22 @@ class AugmentDatasetGUI(QWidget):
         
         # Create slider and value
         slider, value_edit = self.create_slider()
+        
+        # Store references to these widgets
         setattr(self, slider_attr, slider)
         setattr(self, value_attr, value_edit)
+        
+        # If we already have values for this slider, use them
+        if hasattr(self, slider_attr) and isinstance(getattr(self, slider_attr), QSlider):
+            old_slider = getattr(self, slider_attr)
+            if old_slider and hasattr(old_slider, 'value'):
+                # Try to get the value of the previous slider
+                try:
+                    slider.setValue(old_slider.value())
+                    value_edit.setText(str(old_slider.value()))
+                except Exception:
+                    # If it fails, just use default values
+                    pass
         
         # Add to layout
         item_layout.addWidget(drag_handle)
