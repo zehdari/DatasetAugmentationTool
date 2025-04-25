@@ -1414,7 +1414,7 @@ class AugmentDatasetGUI(QWidget):
         plt.style.use('dark_background')
 
         # Plotting a bar graph for class distribution
-        fig, ax = plt.subplots(constrained_layout=True)
+        fig, ax = plt.subplots()
         
         # Use YAML labels or fall back to numeric class IDs
         classes = class_names
@@ -2106,21 +2106,13 @@ class AugmentDatasetGUI(QWidget):
                 
                 # Only update the estimated remaining time every second
                 if current_time - self.last_time_update >= 1.0:
-                    estimated_total_time = elapsed_time * 100 / value
-                    remaining_time = estimated_total_time - elapsed_time
-                    
-                    # Format time remaining
-                    if remaining_time < 60:
-                        time_str = f"{int(remaining_time)} seconds"
-                    elif remaining_time < 3600:
-                        time_str = f"{int(remaining_time / 60)} minutes"
-                    else:
-                        time_str = f"{remaining_time / 3600:.1f} hours"
-                    
-                    # Update remaining time estimate
-                    self.time_label.setText(f"Estimated remaining: {time_str}")
-                    
-                    # Update the last update time
+                    total_estimated = elapsed_time * 100.0 / value
+                    remaining_time = max(0.0, total_estimated - elapsed_time)
+
+                    # Format remaining time just like elapsed
+                    remaining_str = self.format_elapsed_time(remaining_time)
+                    self.time_label.setText(f"Estimated remaining: {remaining_str}")
+
                     self.last_time_update = current_time
                     
             except RuntimeError:
