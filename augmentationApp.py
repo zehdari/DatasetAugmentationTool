@@ -746,7 +746,6 @@ class ConfigManager:
             try:
                 with open(file_path, 'r') as file:
                     config_data = json.load(file)
-                QMessageBox.information(None, "Success", f"Configuration loaded from {file_path}")
                 return config_data
             except Exception as e:
                 QMessageBox.critical(None, "Error", f"Failed to load configuration: {e}")
@@ -920,6 +919,8 @@ class AugmentDatasetGUI(QWidget):
             # Apply saved order if available
             if "augmentation_order" in config_data:
                 self.reorder_sliders_from_config(config_data["augmentation_order"])
+            
+            self.update_sliders_state()
                 
     def reorder_sliders_from_config(self, order):
         """Reorder sliders based on the order saved in the config"""
@@ -1409,8 +1410,11 @@ class AugmentDatasetGUI(QWidget):
 
         self.stats_layout.addWidget(class_table)
 
+        # Dark mode
+        plt.style.use('dark_background')
+
         # Plotting a bar graph for class distribution
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(constrained_layout=True)
         
         # Use YAML labels or fall back to numeric class IDs
         classes = class_names
@@ -1427,14 +1431,25 @@ class AugmentDatasetGUI(QWidget):
         ax.set_xlabel('Classes')
         ax.set_ylabel('Number of Instances')
         ax.set_title('Class Distribution')
-        plt.xticks(rotation=45, ha='right')
+        plt.xticks(rotation=45, size=8, ha='right')
         plt.tight_layout()
+
+        
+        # give 10% headroom so counts don’t get clipped
+        ymax = max(counts) * 1.1
+        ax.set_ylim(0, ymax)
 
         # Add text labels above bars
         for bar, count in zip(bars, counts):
             yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, yval, int(count), 
-                    ha='center', va='bottom')
+            ax.text(
+                bar.get_x() + bar.get_width()/2,
+                yval + (ymax * 0.01),        # little offset above bar
+                int(count),
+                ha='center',
+                va='bottom',
+                color='white'
+            )
 
         canvas = FigureCanvas(fig)
         self.stats_layout.addWidget(canvas)
@@ -2115,6 +2130,10 @@ class AugmentDatasetGUI(QWidget):
     def handle_completion(self):
         """Handle successful completion of the augmentation process"""
         if not self.is_cancelled:
+            # Clear the image cache so that re-displayed images are freshly loaded
+            self.image_cache.clear()
+
+            # Close the progress dialog
             self.progress_dialog.close()
             
             # Calculate total elapsed time
@@ -2136,6 +2155,7 @@ class AugmentDatasetGUI(QWidget):
             )
             
             QMessageBox.information(self, "Augmentation Complete", message)
+
 
     def handle_cancellation(self):
         """Handle user cancellation of the augmentation process"""
