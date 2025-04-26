@@ -1,9 +1,9 @@
 import sys
 from PyQt6.QtWidgets import QApplication
-from augmentation_gui import AugmentionGUI
+from gui.main_window import AugmentationGUI
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    ex = AugmentionGUI()
+    ex = AugmentationGUI()
     ex.show()
     sys.exit(app.exec())

@@ -84,8 +84,12 @@ class AugmentationGUI(QWidget):
                 dir_name = QFileDialog.getExistingDirectory(self, "Select Output Directory")
                 if dir_name:
                     self.output_dir = dir_name
+                    # Update the label in the settings tab
+                    self.settings_tab.output_dir_label.setText(dir_name)
             else:
                 self.output_dir = self.dataset_root + "_Augmented"
+                # Update the label in the settings tab with the default value
+                self.settings_tab.output_dir_label.setText(self.output_dir)
             self.output_dir_set = True
             
     def run_augmentation(self):
