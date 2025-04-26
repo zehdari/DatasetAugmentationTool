@@ -54,14 +54,12 @@ class AugmentationGUI(QWidget):
             self.dataset_root = dir_name
             if not self.output_dir_set:
                 self.prompt_for_output_dir()
-            self.settings_tab.update_sliders_state()
             self.settings_tab.scan_folders()
             self.stats_tab.get_dataset_stats()
 
     def select_overlay_dir(self, dir_name):
         if dir_name:
             self.overlay_image_dir = dir_name
-            self.settings_tab.update_sliders_state()
 
     def select_output_dir(self, dir_name=None):
         if dir_name:
@@ -88,8 +86,6 @@ class AugmentationGUI(QWidget):
                     self.settings_tab.output_dir_label.setText(dir_name)
             else:
                 self.output_dir = self.dataset_root + "_Augmented"
-                # Update the label in the settings tab with the default value
-                self.settings_tab.output_dir_label.setText(self.output_dir)
             self.output_dir_set = True
             
     def run_augmentation(self):

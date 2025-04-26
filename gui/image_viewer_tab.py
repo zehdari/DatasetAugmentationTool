@@ -145,10 +145,14 @@ class ImageViewerTab(QWidget):
             elif self.folder_images:
                 self.current_image_path = self.folder_images[self.current_image_index]
                 
-                # Use image cache
-                image = self.parent.image_cache.get_image(self.current_image_path)
-                if image is None:
-                    return
+                # Use image cache if available
+                if hasattr(self.parent, 'image_cache'):
+                    image = self.parent.image_cache.get_image(self.current_image_path)
+                    if image is None:
+                        return
+                else:
+                    # No cache available, load directly
+                    image = cv2.imread(self.current_image_path)
                     
                 # Check for augmented version
                 relative_image_path = os.path.relpath(self.current_image_path, self.parent.dataset_root)
@@ -156,7 +160,10 @@ class ImageViewerTab(QWidget):
 
                 if os.path.exists(augmented_image_path):
                     if not self.show_original:
-                        image = self.parent.image_cache.get_image(augmented_image_path)
+                        if hasattr(self.parent, 'image_cache'):
+                            image = self.parent.image_cache.get_image(augmented_image_path)
+                        else:
+                            image = cv2.imread(augmented_image_path)
                         self.image_name_label.setText(f"(Augmented) {os.path.basename(self.current_image_path)}")
                         self.show_original_btn.setText("Show Original Image")
                     else:
@@ -216,7 +223,7 @@ class ImageViewerTab(QWidget):
             return
         
         # Get augmentation parameters from the settings tab
-        params = self.parent.settings_tab.get_augmentation_params()
+        params = self.parent.augmentation_tab.get_augmentation_params()
         mirror_weights = params['mirror_weights']
         crop_weights = params['crop_weights']
         zoom_weights = params['zoom_weights']
@@ -266,6 +273,9 @@ class ImageViewerTab(QWidget):
         # Initialize the augmenter
         augmenter = ImageAugmenter()
         
+        # Get overlay_min_max_scale - now from the sliders component
+        overlay_min_max_scale = self.parent.augmentation_tab.sliders.overlay_min_max_scale
+        
         # Run the augment_image function
         augmented_image, augmented_polygons = augmenter.augment_image(
             image=image,
@@ -280,7 +290,7 @@ class ImageViewerTab(QWidget):
             overlay_weights=overlay_weights, 
             rotate_weights=rotate_weights,
             rotation_random_vs_90_weights=rotation_random_vs_90_weights,
-            overlay_min_max_scale=self.parent.settings_tab.overlay_min_max_scale,
+            overlay_min_max_scale=overlay_min_max_scale,
             maintain_aspect_ratio_weights=maintain_aspect_ratio_weights, 
             zoom_weights=zoom_weights, 
             zoom_in_vs_out_weights=zoom_in_vs_out_weights,
@@ -313,8 +323,14 @@ class ImageViewerTab(QWidget):
             return
         
         # Check if output directory is set
-        if not self.parent.output_dir_set:
-            self.parent.prompt_for_output_dir()
+        if not hasattr(self.parent, 'output_dir') or not self.parent.output_dir:
+            from PyQt6.QtWidgets import QMessageBox, QFileDialog
+            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
+            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if output_dir:
+                self.parent.output_dir = output_dir
+            else:
+                return
 
         # Save the augmented image with overwrite
         if self.augmented_image is not None:
@@ -342,19 +358,30 @@ class ImageViewerTab(QWidget):
                         f.write(f"{class_id} {' '.join(coords)}\n")
 
                 # Invalidate cache to force reload on next view
-                if augmented_image_path in self.parent.image_cache.cache:
+                if hasattr(self.parent, 'image_cache') and augmented_image_path in self.parent.image_cache.cache:
                     del self.parent.image_cache.cache[augmented_image_path]
                     
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.information(self, "Success", f"Saved augmented image and labels to:\n{augmented_image_path}")
 
     def display_image_and_polygons(self, image, polygons):
+        # Access class colors through the class_colors component
+        class_colors = {}
+        if hasattr(self.parent, 'augmentation_tab') and hasattr(self.parent.augmentation_tab, 'class_colors'):
+            class_colors = self.parent.augmentation_tab.class_colors.get_class_colors()
+        
         # Make sure we have class colors for each polygon
         for polygon in polygons:
             class_id = polygon[0]
-            if class_id not in self.parent.settings_tab.class_colors:
+            if class_id not in class_colors:
                 color = QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                self.parent.settings_tab.class_colors[class_id] = color
+                # Update the class colors in the component
+                if hasattr(self.parent, 'augmentation_tab') and hasattr(self.parent.augmentation_tab, 'class_colors'):
+                    self.parent.augmentation_tab.class_colors.class_colors[class_id] = color
+                    class_colors = self.parent.augmentation_tab.class_colors.get_class_colors()
+                else:
+                    # Fallback if component not found
+                    class_colors[class_id] = color
         
         # Create QImage and QPixmap from CV2 image
         height, width, _ = image.shape
@@ -380,7 +407,7 @@ class ImageViewerTab(QWidget):
 
         for polygon in polygons:
             class_id = polygon[0]
-            color = self.parent.settings_tab.class_colors[class_id]
+            color = class_colors.get(class_id, QColor(255, 0, 0))  # Default to red if color not found
 
             # Set pen for polygon lines and bounding boxes to full opacity
             pen = QPen(color, 2)
@@ -430,7 +457,7 @@ class ImageViewerTab(QWidget):
             for class_id, position in labels:
                 # Check if we have a YAML label for this class
                 display_label = class_id
-                if hasattr(self.parent, 'stats_tab') and self.parent.stats_tab.yaml_labels:
+                if hasattr(self.parent, 'stats_tab') and hasattr(self.parent.stats_tab, 'yaml_labels') and self.parent.stats_tab.yaml_labels:
                     try:
                         # Try to convert numeric class_id to YAML label
                         yaml_labels = self.parent.stats_tab.yaml_labels
@@ -494,12 +521,14 @@ class ImageViewerTab(QWidget):
                 class_id = str(polygon_data[0])  # Convert to string
                 
                 # Add class id to class colors if not present
-                if class_id not in self.parent.settings_tab.class_colors:
-                    self.parent.settings_tab.class_colors[class_id] = QColor(
-                        random.randint(0, 255), 
-                        random.randint(0, 255), 
-                        random.randint(0, 255)
-                    )
+                class_colors = {}
+                if hasattr(self.parent, 'augmentation_tab') and hasattr(self.parent.augmentation_tab, 'class_colors'):
+                    class_colors = self.parent.augmentation_tab.class_colors.class_colors
+                    if class_id not in class_colors:
+                        color = QColor(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                        self.parent.augmentation_tab.class_colors.class_colors[class_id] = color
+                        # Update the table
+                        self.parent.augmentation_tab.class_colors.update_class_colors_table()
 
                 # Extract normalized coordinates
                 coords = list(map(float, polygon_data[1:]))
