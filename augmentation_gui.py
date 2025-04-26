@@ -895,7 +895,7 @@ class AugmentionGUI(QWidget):
                 else:
                     self.image_name_label.setText(f"(Original) {os.path.basename(self.current_image_path)}")
                     original_image = cv2.imread(self.current_image_path)
-                    polygons, _ = self.load_polygons_and_labels(self.label_paths.get(self.current_image_path), original_image.shape)
+                    polygons = self.load_polygons(self.label_paths.get(self.current_image_path), original_image.shape)
                     self.display_image_and_polygons(original_image, polygons)
                     self.show_original_btn.setText("Show Augmented Image")
             elif self.folder_images:
@@ -928,14 +928,14 @@ class AugmentionGUI(QWidget):
                 # Process labels
                 label_path = self.label_paths.get(self.current_image_path)
                 if self.show_original:
-                    polygons, labels = self.load_polygons_and_labels(label_path, image.shape)
+                    polygons= self.load_polygons(label_path, image.shape)
                 else:
                     relative_label_path = os.path.relpath(label_path, self.dataset_root)
                     augmented_label_path = os.path.join(self.output_dir, relative_label_path)
                     if os.path.exists(augmented_label_path):
-                        polygons, labels = self.load_polygons_and_labels(augmented_label_path, image.shape)
+                        polygons = self.load_polygons(augmented_label_path, image.shape)
                     else:
-                        polygons, labels = self.load_polygons_and_labels(label_path, image.shape)
+                        polygons = self.load_polygons(label_path, image.shape)
 
                 self.display_image_and_polygons(image, polygons)
                 self.update_navigation_buttons()
@@ -1176,7 +1176,7 @@ class AugmentionGUI(QWidget):
         ]
         return [class_id] + points
 
-    def load_polygons_and_labels(self, label_path, target_size):
+    def load_polygons(self, label_path, target_size):
         polygons = []
 
         if (label_path and os.path.exists(label_path)):
@@ -1209,7 +1209,7 @@ class AugmentionGUI(QWidget):
 
                 polygons.append([class_id] + points)
 
-        return polygons, []
+        return polygons
 
     def identify_annotation_type(self, parts):
         
