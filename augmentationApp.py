@@ -16,7 +16,7 @@ import cv2
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import numpy as np
-from augment_data import augment_image
+from augment_data import ImageAugmenter
 import concurrent.futures
 import gc
 from dataclasses import dataclass
@@ -100,8 +100,8 @@ def process_batch(batch: List[BatchItem]) -> List[tuple[bool, str]]:
             }
 
             # Perform augmentation
-            from augment_data import augment_image
-            augmented_image, augmented_polygons = augment_image(
+            augmenter = ImageAugmenter()
+            augmented_image, augmented_polygons = augmenter.augment_image(
                 image=image,
                 polygons=polygons,
                 current_subfolder=item.current_subfolder,
@@ -196,8 +196,8 @@ def process_single_image_worker(args):
         }
         
         # Perform augmentation
-        from augment_data import augment_image
-        augmented_image, augmented_polygons = augment_image(
+        augmenter = ImageAugmenter()
+        augmented_image, augmented_polygons = augmenter.augment_image(
             image=image,
             polygons=polygons,
             current_subfolder=subfolder,
@@ -787,6 +787,7 @@ class AugmentDatasetGUI(QWidget):
         super().__init__()
         self.image_cache = ImageCache(max_size=100)
         self.config_manager = ConfigManager('augmentation_config.json')
+        self.augmenter = ImageAugmenter()
 
         self.dataset_root = ""
         self.overlay_image_dir = ""
@@ -2231,7 +2232,7 @@ class AugmentDatasetGUI(QWidget):
             class_ids = []
 
         # Run the augment_image function
-        augmented_image, augmented_polygons = augment_image(
+        augmented_image, augmented_polygons = self.augmenter.augment_image(
             image,
             polygons,
             self.folder_name,
