@@ -8,6 +8,7 @@ import re
 from utils.ui_components import ClickFilter, CustomLineEdit
 from utils.dataset_manager import DatasetManager
 from gui.class_colors_manager import ClassColorsManager
+from gui.reorderable_sliders import ReorderableSliders
 
 class AugmentationSettingsTab(QWidget):
     def __init__(self, parent):
@@ -75,55 +76,35 @@ class AugmentationSettingsTab(QWidget):
         weights_group = QGroupBox("Augmentation Settings")
         weights_layout = QVBoxLayout()
 
-        self.sliders_list = QListWidget()
-        self.sliders_list.setDragEnabled(True)
-        self.sliders_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.sliders_list.setMinimumHeight(300) 
+        # Initialize reorderable sliders component
+        self.reorderable_sliders = ReorderableSliders(self)
         
-        self.sliders_list.setStyleSheet("""
-            QListWidget::item:selected { 
-                background: transparent; 
-                color: black;
-            }
-            QListWidget::item:hover { 
-                background: transparent; 
-                border: none;
-            }
-            QListWidget::item:selected:active {
-                background: transparent;
-                color: black;
-            }
-            QListWidget::item:selected:!active {
-                background: transparent;
-                color: black;
-            }
-        """)
-            
+        # Add sliders to the component
         self.slider_data = [
-            {"name": "Mirror % Probability:", "object": "mirror_slider", "value_object": "mirror_value"},
-            {"name": "Rotate % Probability:", "object": "rotate_slider", "value_object": "rotate_value"},
-            {"name": "Rotation (0 to 360) vs 90 %: ", "object": "rotation_random_vs_90_slider", "value_object": "rotation_random_vs_90_value"},
-            {"name": "Crop % Probability:", "object": "crop_slider", "value_object": "crop_value"},
-            {"name": "Maintain Aspect Ratio on Crop %: ", "object": "maintain_aspect_ratio_slider", "value_object": "maintain_aspect_ratio_value"},
-            {"name": "Zoom % Probability:", "object": "zoom_slider", "value_object": "zoom_value"},
-            {"name": "Zoom In vs Out %: ", "object": "zoom_in_vs_out_slider", "value_object": "zoom_in_vs_out_value"},
-            {"name": "Overlay % Probability:", "object": "overlay_slider", "value_object": "overlay_value"}
+            {"name": "Mirror % Probability:", "object": "mirror_slider", "value_object": "mirror_value", "aug_type": "mirror"},
+            {"name": "Rotate % Probability:", "object": "rotate_slider", "value_object": "rotate_value", "aug_type": "rotate"},
+            {"name": "Rotation (0 to 360) vs 90 %: ", "object": "rotation_random_vs_90_slider", "value_object": "rotation_random_vs_90_value", "aug_type": "rotation_random_vs_90"},
+            {"name": "Crop % Probability:", "object": "crop_slider", "value_object": "crop_value", "aug_type": "crop"},
+            {"name": "Maintain Aspect Ratio on Crop %: ", "object": "maintain_aspect_ratio_slider", "value_object": "maintain_aspect_ratio_value", "aug_type": "maintain_aspect_ratio"},
+            {"name": "Zoom % Probability:", "object": "zoom_slider", "value_object": "zoom_value", "aug_type": "zoom"},
+            {"name": "Zoom In vs Out %: ", "object": "zoom_in_vs_out_slider", "value_object": "zoom_in_vs_out_value", "aug_type": "zoom_in_vs_out"},
+            {"name": "Overlay % Probability:", "object": "overlay_slider", "value_object": "overlay_value", "aug_type": "overlay"}
         ]
 
-        self.slider_to_augmentation_type = {
-            "mirror_slider": "mirror",
-            "rotate_slider": "rotate",
-            "rotation_random_vs_90_slider": "rotation_random_vs_90",
-            "crop_slider": "crop",
-            "maintain_aspect_ratio_slider": "maintain_aspect_ratio",
-            "zoom_slider": "zoom",
-            "zoom_in_vs_out_slider": "zoom_in_vs_out",
-            "overlay_slider": "overlay"
-        }
         for slider_info in self.slider_data:
-            self.add_slider_to_list(slider_info["name"], slider_info["object"], slider_info["value_object"])
+            slider, value_edit = self.reorderable_sliders.add_slider(
+                slider_info["name"], 
+                slider_info["object"], 
+                slider_info["value_object"],
+                default_value=50,
+                augmentation_type=slider_info["aug_type"]
+            )
+            
+            # Store references for backward compatibility
+            setattr(self, slider_info["object"], slider)
+            setattr(self, slider_info["value_object"], value_edit)
         
-        weights_layout.addWidget(self.sliders_list)
+        weights_layout.addWidget(self.reorderable_sliders)
         
         # Settings buttons group
         settings_buttons_layout = QHBoxLayout()
@@ -189,70 +170,6 @@ class AugmentationSettingsTab(QWidget):
         layout.addWidget(weights_skip_layout)
         self.setLayout(layout)
 
-    def add_slider_to_list(self, name, slider_attr, value_attr):
-        # Create a widget to hold the slider row
-        item_widget = QWidget()
-        item_layout = QHBoxLayout(item_widget)
-        item_layout.setContentsMargins(5, 5, 5, 5)
-        
-        # Create drag handle label
-        drag_handle = QLabel("≡")  # Using equal sign to create a simple handle icon
-        drag_handle.setFixedWidth(20)
-        drag_handle.setStyleSheet("""
-            font-size: 18px; 
-            color: #999;
-            padding: 2px;
-            border-radius: 3px;
-        """)
-        
-        # Create label
-        label = QLabel(name)
-        label.setMinimumWidth(180)  # Reduced width slightly to make room for handle
-        
-        # Create slider and value
-        slider, value_edit = self.create_slider()
-        
-        # Store references to these widgets
-        setattr(self, slider_attr, slider)
-        setattr(self, value_attr, value_edit)
-        
-        # If we already have values for this slider, use them
-        if hasattr(self, slider_attr) and isinstance(getattr(self, slider_attr), QSlider):
-            old_slider = getattr(self, slider_attr)
-            if old_slider and hasattr(old_slider, 'value'):
-                # Try to get the value of the previous slider
-                try:
-                    slider.setValue(old_slider.value())
-                    value_edit.setText(str(old_slider.value()))
-                except Exception:
-                    # If it fails, just use default values
-                    pass
-        
-        # Add to layout
-        item_layout.addWidget(drag_handle)
-        item_layout.addWidget(label)
-        item_layout.addWidget(slider, 1)  # Give slider stretch factor
-        item_layout.addWidget(value_edit)
-        
-        # Add row to list widget
-        list_item = QListWidgetItem(self.sliders_list)
-        list_item.setSizeHint(item_widget.sizeHint())
-        self.sliders_list.addItem(list_item)
-        self.sliders_list.setItemWidget(list_item, item_widget)
-
-    def create_slider(self):
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(0, 100)
-        slider.setValue(50)
-        slider.setEnabled(False)
-        value_label = CustomLineEdit("50")
-        value_label.setFixedWidth(40)
-        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        value_label.setEnabled(False)
-        slider.valueChanged.connect(lambda value, lbl=value_label: lbl.setText(str(value)))
-        value_label.textChanged.connect(lambda text, sld=slider: sld.setValue(int(text)) if text.isdigit() else None)
-        return slider, value_label
-
     def select_dataset_root(self):
         dir_name = QFileDialog.getExistingDirectory(self, "Select Dataset Root")
         if dir_name:
@@ -275,26 +192,20 @@ class AugmentationSettingsTab(QWidget):
         enable_normal_sliders = bool(self.parent.dataset_root)
         enable_overlay_sliders = bool(self.parent.overlay_image_dir)
         
+        # Create filter lists for normal and overlay sliders
+        normal_sliders = [
+            'mirror_slider', 'crop_slider', 'zoom_slider', 'rotate_slider',
+            'rotation_random_vs_90_slider', 'zoom_in_vs_out_slider', 'maintain_aspect_ratio_slider'
+        ]
+        overlay_sliders = ['overlay_slider']
+        
         # Enable/disable normal sliders
-        self.mirror_slider.setEnabled(enable_normal_sliders)
-        self.mirror_value.setEnabled(enable_normal_sliders)
-        self.crop_slider.setEnabled(enable_normal_sliders)
-        self.crop_value.setEnabled(enable_normal_sliders)
-        self.zoom_slider.setEnabled(enable_normal_sliders)
-        self.zoom_value.setEnabled(enable_normal_sliders)
-        self.rotate_slider.setEnabled(enable_normal_sliders)
-        self.rotate_value.setEnabled(enable_normal_sliders)
-        self.rotation_random_vs_90_slider.setEnabled(enable_normal_sliders)
-        self.rotation_random_vs_90_value.setEnabled(enable_normal_sliders)
-        self.zoom_in_vs_out_slider.setEnabled(enable_normal_sliders)
-        self.zoom_in_vs_out_value.setEnabled(enable_normal_sliders)
-        self.maintain_aspect_ratio_slider.setEnabled(enable_normal_sliders)
-        self.maintain_aspect_ratio_value.setEnabled(enable_normal_sliders)
+        self.reorderable_sliders.enable_sliders(enable_normal_sliders, normal_sliders)
         
         # Enable/disable overlay sliders
-        self.overlay_slider.setEnabled(enable_overlay_sliders)
-        self.overlay_value.setEnabled(enable_overlay_sliders)
+        self.reorderable_sliders.enable_sliders(enable_overlay_sliders, overlay_sliders)
 
+        # Update skip table checkboxes
         for row in range(self.skip_table.rowCount()):
             overlay_checkbox = self.skip_table.cellWidget(row, 5)
             if overlay_checkbox:
@@ -302,23 +213,7 @@ class AugmentationSettingsTab(QWidget):
 
     def get_augmentation_order(self):
         """Get the current order of augmentations from the sliders list"""
-        augmentation_order = []
-        valid_augmentation_types = ["mirror", "crop", "zoom", "rotate", "overlay"]
-        
-        for i in range(self.sliders_list.count()):
-            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
-            for j in range(item_widget.layout().count()):
-                widget = item_widget.layout().itemAt(j).widget()
-                if isinstance(widget, QSlider):
-                    for attr_name, attr_value in vars(self).items():
-                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
-                            aug_type = self.slider_to_augmentation_type[attr_name]
-                            if aug_type in valid_augmentation_types:
-                                augmentation_order.append(aug_type)
-                            break
-                    break
-        
-        return augmentation_order
+        return self.reorderable_sliders.get_augmentation_order()
 
     def get_skip_augmentations(self):
         skip_augmentations = {
@@ -363,19 +258,24 @@ class AugmentationSettingsTab(QWidget):
         params = {
             'skip_existing': self.skip_existing_checkbox.isChecked(),
             'skip_augmentations': self.get_skip_augmentations(),
-            'mirror_weights': [self.mirror_slider.value(), 100 - self.mirror_slider.value()],
-            'crop_weights': [self.crop_slider.value(), 100 - self.crop_slider.value()],
-            'zoom_weights': [self.zoom_slider.value(), 100 - self.zoom_slider.value()],
-            'rotate_weights': [self.rotate_slider.value(), 100 - self.rotate_slider.value()],
-            'overlay_weights': ([self.overlay_slider.value(), 100 - self.overlay_slider.value()] 
-                               if self.parent.overlay_image_dir else [0, 100]),
-            'rotation_random_vs_90_weights': [self.rotation_random_vs_90_slider.value(), 
-                                             100 - self.rotation_random_vs_90_slider.value()],
+            'mirror_weights': [self.reorderable_sliders.sliders.get('mirror_slider', 50).value(), 
+                            100 - self.reorderable_sliders.sliders.get('mirror_slider', 50).value()],
+            'crop_weights': [self.reorderable_sliders.sliders.get('crop_slider', 50).value(), 
+                        100 - self.reorderable_sliders.sliders.get('crop_slider', 50).value()],
+            'zoom_weights': [self.reorderable_sliders.sliders.get('zoom_slider', 50).value(), 
+                        100 - self.reorderable_sliders.sliders.get('zoom_slider', 50).value()],
+            'rotate_weights': [self.reorderable_sliders.sliders.get('rotate_slider', 50).value(), 
+                            100 - self.reorderable_sliders.sliders.get('rotate_slider', 50).value()],
+            'overlay_weights': ([self.reorderable_sliders.sliders.get('overlay_slider', 50).value(), 
+                            100 - self.reorderable_sliders.sliders.get('overlay_slider', 50).value()] 
+                            if self.parent.overlay_image_dir else [0, 100]),
+            'rotation_random_vs_90_weights': [self.reorderable_sliders.sliders.get('rotation_random_vs_90_slider', 25).value(), 
+                                            100 - self.reorderable_sliders.sliders.get('rotation_random_vs_90_slider', 25).value()],
             'overlay_min_max_scale': self.overlay_min_max_scale,
-            'maintain_aspect_ratio_weights': [self.maintain_aspect_ratio_slider.value(),
-                                            100 - self.maintain_aspect_ratio_slider.value()],
-            'zoom_in_vs_out_weights': [self.zoom_in_vs_out_slider.value(),
-                                      100 - self.zoom_in_vs_out_slider.value()],
+            'maintain_aspect_ratio_weights': [self.reorderable_sliders.sliders.get('maintain_aspect_ratio_slider', 50).value(),
+                                        100 - self.reorderable_sliders.sliders.get('maintain_aspect_ratio_slider', 50).value()],
+            'zoom_in_vs_out_weights': [self.reorderable_sliders.sliders.get('zoom_in_vs_out_slider', 40).value(),
+                                    100 - self.reorderable_sliders.sliders.get('zoom_in_vs_out_slider', 40).value()],
             'zoom_padding': self.zoom_padding,
             'augmentation_order': augmentation_order
         }
@@ -383,7 +283,6 @@ class AugmentationSettingsTab(QWidget):
         return params
 
     def update_class_colors_table(self):
-        print(self.class_colors_table)
         # Delegate to the class colors manager
         self.class_colors_manager.update_class_colors_table(self.class_colors, self.id_to_label)
     
@@ -398,22 +297,10 @@ class AugmentationSettingsTab(QWidget):
 
     def save_current_config(self):
         # Get the current order of sliders
-        slider_order = []
-        for i in range(self.sliders_list.count()):
-            item_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
-            # Find the slider widget in the layout
-            for j in range(item_widget.layout().count()):
-                widget = item_widget.layout().itemAt(j).widget()
-                if isinstance(widget, QSlider):
-                    # Find which attribute this slider corresponds to
-                    for attr_name, attr_value in vars(self).items():
-                        if attr_value is widget and attr_name in self.slider_to_augmentation_type:
-                            slider_order.append(self.slider_to_augmentation_type[attr_name])
-                            break
-                    break
+        augmentation_order = self.get_augmentation_order()
         
         config_data = {
-            "augmentation_order": slider_order,
+            "augmentation_order": augmentation_order,
             "crop_probability": self.crop_slider.value(),
             "maintain_aspect_ratio": self.maintain_aspect_ratio_slider.value(),
             "mirror_probability": self.mirror_slider.value(),
@@ -430,75 +317,26 @@ class AugmentationSettingsTab(QWidget):
         config_data = self.parent.config_manager.load_config()
         if config_data:
             # Set slider values
-            self.crop_slider.setValue(config_data.get("crop_probability", 0))
-            self.maintain_aspect_ratio_slider.setValue(config_data.get("maintain_aspect_ratio", 0))
-            self.mirror_slider.setValue(config_data.get("mirror_probability", 0))
-            self.overlay_slider.setValue(config_data.get("overlay_probability", 0))
-            self.rotate_slider.setValue(config_data.get("rotate_probability", 0))
-            self.rotation_random_vs_90_slider.setValue(config_data.get("rotation_random_vs_90", 0))
-            self.zoom_in_vs_out_slider.setValue(config_data.get("zoom_in_vs_out", 0))
-            self.zoom_slider.setValue(config_data.get("zoom_probability", 0))
+            slider_values = {
+                "crop_slider": config_data.get("crop_probability", 0),
+                "maintain_aspect_ratio_slider": config_data.get("maintain_aspect_ratio", 0),
+                "mirror_slider": config_data.get("mirror_probability", 0),
+                "overlay_slider": config_data.get("overlay_probability", 0),
+                "rotate_slider": config_data.get("rotate_probability", 0),
+                "rotation_random_vs_90_slider": config_data.get("rotation_random_vs_90", 0),
+                "zoom_in_vs_out_slider": config_data.get("zoom_in_vs_out", 0),
+                "zoom_slider": config_data.get("zoom_probability", 0)
+            }
+            self.reorderable_sliders.set_slider_values(slider_values)
+            
+            # Set skip existing checkbox
             self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", False))
             
             # Apply saved order if available
             if "augmentation_order" in config_data:
-                self.reorder_sliders_from_config(config_data["augmentation_order"])
+                self.reorderable_sliders.reorder_sliders_from_config(config_data["augmentation_order"])
             
             self.update_sliders_state()
-                
-    def reorder_sliders_from_config(self, order):
-        """Reorder sliders based on the order saved in the config"""
-        # Get current information about all sliders
-        slider_info = []
-        for i in range(self.sliders_list.count()):
-            item = self.sliders_list.item(i)
-            widget = self.sliders_list.itemWidget(item)
-            
-            # Find which slider this corresponds to
-            for j in range(widget.layout().count()):
-                child_widget = widget.layout().itemAt(j).widget()
-                if isinstance(child_widget, QSlider):
-                    # Find which attribute this slider corresponds to
-                    for attr_name, attr_value in vars(self).items():
-                        if attr_value is child_widget and attr_name in self.slider_to_augmentation_type:
-                            aug_type = self.slider_to_augmentation_type[attr_name]
-                            # Store current value
-                            value = child_widget.value()
-                            slider_info.append({
-                                'aug_type': aug_type,
-                                'slider_attr': attr_name,
-                                'value': value,
-                                'index': i
-                            })
-                            break
-                    break
-        
-        # Create a mapping from augmentation types to their info
-        aug_type_to_info = {info['aug_type']: info for info in slider_info}
-        
-        # Temporarily remove all sliders
-        for i in range(self.sliders_list.count() - 1, -1, -1):
-            self.sliders_list.takeItem(i)
-        
-        # Re-add sliders in the desired order
-        for aug_type in order:
-            if aug_type in aug_type_to_info:
-                info = aug_type_to_info[aug_type]
-                
-                # Find the corresponding slider_info entry
-                for slider_item in self.slider_data:
-                    if slider_item['object'] == info['slider_attr']:
-                        # Re-add the slider with proper values
-                        self.add_slider_to_list(
-                            slider_item["name"], 
-                            slider_item["object"], 
-                            slider_item["value_object"]
-                        )
-                        
-                        # Set the value to match the original
-                        slider = getattr(self, slider_item["object"])
-                        slider.setValue(info['value'])
-                        break
 
     def scan_folders(self):
         dataset_root = self.parent.dataset_root
