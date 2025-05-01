@@ -1,18 +1,13 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                             QFileDialog, QSlider, QMessageBox, QGroupBox, QFormLayout,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, 
-                             QSplitter, QListWidget, QSizePolicy, QListWidgetItem, 
-                             QColorDialog, QAbstractItemView, QProgressDialog, 
-                             QProgressBar, QTextEdit, QLineEdit)
+                             QFileDialog, QSlider, QGroupBox, QFormLayout, QTableWidget, 
+                             QTableWidgetItem, QHeaderView, QCheckBox, QSplitter, 
+                             QListWidget, QSizePolicy, QListWidgetItem,  QAbstractItemView)
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
-import random
-import time
 import os
 import re
 from utils.ui_components import ClickFilter, CustomLineEdit
 from utils.dataset_manager import DatasetManager
-import yaml
+from gui.class_colors_manager import ClassColorsManager
 
 class AugmentationSettingsTab(QWidget):
     def __init__(self, parent):
@@ -25,9 +20,12 @@ class AugmentationSettingsTab(QWidget):
             'Mirror': [],
             'Overlay': []
         }
+
         self.class_colors = {}
         self.id_to_label = {}
-        self.label_to_id = {}
+        
+        # Initialize class colors manager
+        self.class_colors_manager = ClassColorsManager(self)
         
         # Default augmentation settings
         self.rotation_random_vs_90 = [25, 75]
@@ -163,16 +161,14 @@ class AugmentationSettingsTab(QWidget):
         
         skip_colors_layout.addWidget(self.skip_group)
 
+        # Class Colors Group - Use the class colors manager widget
         self.class_color_group = QGroupBox("Class Colors")
         self.class_colors_layout = QVBoxLayout()
-        self.class_colors_table = QTableWidget()
-        self.class_colors_table.setColumnCount(2)
-        self.class_colors_table.setHorizontalHeaderLabels(['Class', 'Color'])
-        self.class_colors_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.class_colors_table.itemClicked.connect(self.on_color_cell_clicked)
-        self.class_colors_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.class_colors_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.class_colors_layout.addWidget(self.class_colors_table)
+        
+        # Store reference to the class colors table for compatibility
+        self.class_colors_table = self.class_colors_manager.class_colors_table
+        
+        self.class_colors_layout.addWidget(self.class_colors_manager)
         self.class_color_group.setLayout(self.class_colors_layout)
         
         skip_colors_layout.addWidget(self.class_color_group)
@@ -386,121 +382,11 @@ class AugmentationSettingsTab(QWidget):
         
         return params
 
-    def on_color_cell_clicked(self, item):
-        try:
-            if item.column() == 1:  # Check if the clicked cell is in the color column
-                row = item.row()
-                class_label = self.class_colors_table.item(row, 0).text()
-                
-                # Find the class_id that corresponds to this label
-                class_id = None
-                for cid, label in self.id_to_label.items():
-                    if str(label) == class_label:
-                        class_id = cid
-                        break
-                
-                # If we couldn't find the ID through the mapping, 
-                # the label might be the raw class ID itself
-                if class_id is None:
-                    class_id = class_label
-                    
-                # Make sure the class_id exists in class_colors
-                if class_id in self.class_colors:
-                    color = QColorDialog.getColor(self.class_colors[class_id], self, "Choose Class Color")
-                    if color.isValid():
-                        self.class_colors[class_id] = color
-                        self.update_class_colors_table()
-                        # Update the image in the viewer tab if available
-                        if hasattr(self.parent, 'image_viewer_tab'):
-                            self.parent.image_viewer_tab.show_image()
-        except Exception as e:
-            print(f"Error in on_color_cell_clicked: {str(e)}")
-            pass
-
     def update_class_colors_table(self):
-        self.class_colors_table.setRowCount(len(self.class_colors))
-        row = 0
-        for class_id, color in self.class_colors.items():
-            # Get label for class ID, defaulting to class_id itself if not found
-            class_label = self.id_to_label.get(class_id, class_id)
-            
-            class_item = QTableWidgetItem(str(class_label))
-            color_item = QTableWidgetItem()
-            color_item.setBackground(color)
-            self.class_colors_table.setItem(row, 0, class_item)
-            self.class_colors_table.setItem(row, 1, color_item)
-            row += 1
-
-    def scan_folders(self):
-        dataset_root = self.parent.dataset_root
-        
-        # Clear previous data structures
-        for key in self.skip_augmentations.keys():
-            self.skip_augmentations[key] = []
-        
-        # Clear class mappings
-        self.id_to_label = {}
-        self.label_to_id = {}
-        self.class_colors = {}
-
-        # Scan dataset for folders and images
-        folders = set()
-        image_paths = []  # Reset image paths
-        label_paths = {}  # Reset label paths
-
-        for root, dirs, files in os.walk(dataset_root):
-            if os.path.basename(root).lower() not in ['images', 'labels']:
-                for name in dirs:
-                    if name.lower() not in ['train', 'val', 'labels', 'images']:
-                        folders.add(name)
-                for file in files:
-                    if file.endswith(('.png', '.jpg', '.jpeg')):
-                        image_path = os.path.join(root, file)
-                        image_paths.append(image_path)
-                        label_path = os.path.join(dataset_root, 'labels', os.path.relpath(image_path, os.path.join(dataset_root, 'images')).replace('.jpg', '.txt').replace('.jpeg', '.txt').replace('.png', '.txt'))
-                        label_paths[image_path] = label_path
-
-        folders = list(folders)
-        folders.sort()
-
-        self.skip_table.setRowCount(len(folders))
-
-        # Keep a reference to the folder list in the image viewer
-        if hasattr(self.parent, 'image_viewer_tab'):
-            self.parent.image_viewer_tab.folder_list.clear()
-            
-        for row, folder in enumerate(folders):
-            folder_item = QTableWidgetItem(folder)
-            folder_item.setFlags(folder_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make folder names read-only
-            self.skip_table.setItem(row, 0, folder_item)
-            
-            if hasattr(self.parent, 'image_viewer_tab'):
-                list_item = QListWidgetItem(folder)
-                self.parent.image_viewer_tab.folder_list.addItem(list_item)
-                
-            for col in range(1, 7):  # Update the range to include the new column
-                checkbox = QCheckBox()
-                checkbox.setStyleSheet("margin-left: 0px; margin-right: auto;")  # Align checkbox to the left 
-                if col == 5:
-                    checkbox.setEnabled(False)
-                if col == 6:  # Connect the new checkbox to the slot
-                    checkbox.stateChanged.connect(lambda state, r=row: self.toggle_skip_all(state, r))
-                self.skip_table.setCellWidget(row, col, checkbox)
-
-        # Sort images numerically
-        image_paths.sort(key=self.natural_keys)
-        
-        # Update the parent's image paths
-        self.parent.image_paths = image_paths
-        self.parent.label_paths = label_paths
-
-        # Parse YAML labels if available
-        yaml_labels = DatasetManager.parse_dataset_yaml(dataset_root)
-        
-        # Update the stats tab with the labels
-        if hasattr(self.parent, 'stats_tab'):
-            self.parent.stats_tab.yaml_labels = yaml_labels
-
+        print(self.class_colors_table)
+        # Delegate to the class colors manager
+        self.class_colors_manager.update_class_colors_table(self.class_colors, self.id_to_label)
+    
     def toggle_skip_all(self, state, row):
         skip_all_checked = state == Qt.CheckState.Checked
         for col in range(1, 6):  # Update to check relevant columns
@@ -613,6 +499,75 @@ class AugmentationSettingsTab(QWidget):
                         slider = getattr(self, slider_item["object"])
                         slider.setValue(info['value'])
                         break
+
+    def scan_folders(self):
+        dataset_root = self.parent.dataset_root
+        
+        # Clear previous data structures
+        for key in self.skip_augmentations.keys():
+            self.skip_augmentations[key] = []
+        
+        # Clear class mappings
+        self.id_to_label.clear()
+        self.class_colors.clear()
+
+        # Scan dataset for folders and images
+        folders = set()
+        image_paths = []  # Reset image paths
+        label_paths = {}  # Reset label paths
+
+        for root, dirs, files in os.walk(dataset_root):
+            if os.path.basename(root).lower() not in ['images', 'labels']:
+                for name in dirs:
+                    if name.lower() not in ['train', 'val', 'labels', 'images']:
+                        folders.add(name)
+                for file in files:
+                    if file.endswith(('.png', '.jpg', '.jpeg')):
+                        image_path = os.path.join(root, file)
+                        image_paths.append(image_path)
+                        label_path = os.path.join(dataset_root, 'labels', os.path.relpath(image_path, os.path.join(dataset_root, 'images')).replace('.jpg', '.txt').replace('.jpeg', '.txt').replace('.png', '.txt'))
+                        label_paths[image_path] = label_path
+
+        folders = list(folders)
+        folders.sort()
+
+        self.skip_table.setRowCount(len(folders))
+
+        # Keep a reference to the folder list in the image viewer
+        if hasattr(self.parent, 'image_viewer_tab'):
+            self.parent.image_viewer_tab.folder_list.clear()
+            
+        for row, folder in enumerate(folders):
+            folder_item = QTableWidgetItem(folder)
+            folder_item.setFlags(folder_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make folder names read-only
+            self.skip_table.setItem(row, 0, folder_item)
+            
+            if hasattr(self.parent, 'image_viewer_tab'):
+                list_item = QListWidgetItem(folder)
+                self.parent.image_viewer_tab.folder_list.addItem(list_item)
+                
+            for col in range(1, 7):  # Update the range to include the new column
+                checkbox = QCheckBox()
+                checkbox.setStyleSheet("margin-left: 0px; margin-right: auto;")  # Align checkbox to the left 
+                if col == 5:
+                    checkbox.setEnabled(False)
+                if col == 6:  # Connect the new checkbox to the slot
+                    checkbox.stateChanged.connect(lambda state, r=row: self.toggle_skip_all(state, r))
+                self.skip_table.setCellWidget(row, col, checkbox)
+
+        # Sort images numerically
+        image_paths.sort(key=self.natural_keys)
+        
+        # Update the parent's image paths
+        self.parent.image_paths = image_paths
+        self.parent.label_paths = label_paths
+
+        # Parse YAML labels if available
+        yaml_labels = DatasetManager.parse_dataset_yaml(dataset_root)
+        
+        # Update the stats tab with the labels
+        if hasattr(self.parent, 'stats_tab'):
+            self.parent.stats_tab.yaml_labels = yaml_labels
 
     def atoi(self, text):
         """Helper function for natural sort order"""

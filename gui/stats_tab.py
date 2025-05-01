@@ -29,7 +29,6 @@ class DatasetStatsTab(QWidget):
 
         # Reset class mappings
         self.parent.settings_tab.id_to_label = {}
-        self.parent.settings_tab.label_to_id = {}
         
         class_counter = Counter()
         image_counter = 0
@@ -70,16 +69,13 @@ class DatasetStatsTab(QWidget):
                     label = self.yaml_labels[int(class_id)] if int(class_id) < len(self.yaml_labels) else class_id
                     class_names.append(label)
                     self.parent.settings_tab.id_to_label[class_id] = label
-                    self.parent.settings_tab.label_to_id[label] = class_id
                     
                 except (ValueError, IndexError):
                     class_names.append(class_id)
                     self.parent.settings_tab.id_to_label[class_id] = class_id
-                    self.parent.settings_tab.label_to_id[class_id] = class_id
             else:
                 class_names.append(class_id)
                 self.parent.settings_tab.id_to_label[class_id] = class_id
-                self.parent.settings_tab.label_to_id[class_id] = class_id
 
         class_table = QTableWidget()
         class_table.setColumnCount(3)
