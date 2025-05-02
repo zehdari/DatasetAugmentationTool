@@ -62,6 +62,13 @@ class CollapsibleDetails(QWidget):
             }
         """)
         
+        # Container for child sliders (new)
+        self.child_sliders_container = QWidget()
+        self.child_sliders_layout = QVBoxLayout(self.child_sliders_container)
+        self.child_sliders_layout.setContentsMargins(10, 0, 0, 0)  # Add left indent
+        self.child_sliders_layout.setSpacing(0)  # Minimal spacing
+        self.child_sliders_container.setVisible(False)
+        
         # Add a horizontal line above the details
         self.separator = QFrame()
         self.separator.setFrameShape(QFrame.Shape.HLine)
@@ -70,11 +77,13 @@ class CollapsibleDetails(QWidget):
         self.separator.setFixedHeight(1)  # Make separator very thin
         
         layout.addWidget(self.separator)
+        layout.addWidget(self.child_sliders_container)
         layout.addWidget(self.details_edit)
         
     def toggle_details(self):
         self.collapsed = not self.collapsed
         self.details_edit.setVisible(not self.collapsed)
+        self.child_sliders_container.setVisible(not self.collapsed)
         self.separator.setVisible(not self.collapsed)
         
         # Update button text
@@ -93,19 +102,106 @@ class CollapsibleDetails(QWidget):
         self.toggle_btn.setEnabled(enabled)
         self.details_edit.setEnabled(enabled)
         
+
+class ChildSlider(QWidget):
+    """A non-reorderable slider that appears in a parent's details section."""
+    
+    # Signal emitted when the slider value changes
+    valueChanged = pyqtSignal(int)
+    
+    def __init__(self, name, default_value=50, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.value = default_value
+        self.name = name
+        self.initUI()
+        
+    def initUI(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)  # Minimal spacing between items
+        
+        # Create label
+        self.label = QLabel(self.name)
+        self.label.setMinimumWidth(180)
+        self.label.setStyleSheet("padding: 0px; margin: 0px;")  # Remove padding
+        
+        # Create slider
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(self.value)
+        self.slider.setFixedHeight(24)  # Smaller height for child sliders
+        self.slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 3px;
+                margin: 0px;
+            }
+            QSlider::handle:horizontal {
+                width: 8px;
+                margin: -3px 0px;
+            }
+        """)
+        
+        # Create value label
+        self.value_edit = CustomLineEdit(str(self.value))
+        self.value_edit.setFixedWidth(35)
+        self.value_edit.setFixedHeight(18)
+        self.value_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value_edit.setStyleSheet("padding: 0px; margin: 0px;")
+        
+        # Connect signals
+        self.slider.valueChanged.connect(self.on_slider_value_changed)
+        self.value_edit.textChanged.connect(self.on_value_edit_changed)
+        
+        # Add to layout
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider, 1)  # Give slider stretch factor
+        layout.addWidget(self.value_edit)
+        
+        self.setFixedHeight(30)  # Fixed height for child slider row
+        
+    def on_slider_value_changed(self, value):
+        self.value = value
+        self.value_edit.setText(str(value))
+        self.valueChanged.emit(value)
+        
+    def on_value_edit_changed(self, text):
+        if text.isdigit():
+            value = int(text)
+            if 0 <= value <= 100:
+                self.value = value
+                self.slider.setValue(value)
+                
+    def get_value(self):
+        return self.value
+    
+    def set_value(self, value):
+        self.value = max(0, min(100, value))
+        self.slider.setValue(self.value)
+        self.value_edit.setText(str(self.value))
+        
+    def set_enabled(self, enabled):
+        self.slider.setEnabled(enabled)
+        self.value_edit.setEnabled(enabled)
+        self.label.setEnabled(enabled)
+        
+
 class ReorderableSliders(QWidget):
     """A widget that displays a list of sliders that can be reordered by drag and drop."""
     
     # Signal emitted when any slider value changes
     sliderValueChanged = pyqtSignal(str, int)
+    childSliderValueChanged = pyqtSignal(str, int)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
         self.sliders = {}  # Dictionary to store slider references
+        self.child_sliders = {}  # Dictionary to store child slider references
         self.values = {}   # Dictionary to store value edit references
         self.details = {}  # Dictionary to store details widgets
         self.slider_to_augmentation_type = {}  # Mapping from slider names to augmentation types
+        self.parent_child_mapping = {}  # Dictionary to track parent-child relationships
         
         self.initUI()
         
@@ -231,15 +327,56 @@ class ReorderableSliders(QWidget):
             self._adjust_item_size(item, widget.collapsed, slider_h, details_h))
         
         return slider, value_edit, details_widget
+    
+    def add_child_slider(self, parent_attr, name, child_attr, default_value=50):
+        """Add a child slider to a parent slider's details section."""
+        if parent_attr not in self.details:
+            return None
+            
+        # Create child slider
+        child_slider = ChildSlider(name, default_value)
+        
+        # Add to parent's details section
+        parent_details = self.details[parent_attr]
+        parent_details.child_sliders_layout.addWidget(child_slider)
+        
+        # Store reference to child slider
+        self.child_sliders[child_attr] = child_slider
+        
+        # Add to parent-child mapping
+        if parent_attr not in self.parent_child_mapping:
+            self.parent_child_mapping[parent_attr] = []
+        self.parent_child_mapping[parent_attr].append(child_attr)
+        
+        # Connect value changed signal
+        child_slider.valueChanged.connect(
+            lambda value, attr=child_attr: self.childSliderValueChanged.emit(attr, value)
+        )
+        
+        return child_slider
         
     def _adjust_item_size(self, item, is_collapsed, slider_height, details_height):
         """Adjust the size of a list item based on collapse state"""
         if is_collapsed:  # Details were just hidden
             new_height = slider_height + 16  # Just the slider + small space for toggle button
         else:  # Details were just shown
-            new_height = slider_height + details_height + 20  # Add space for details
+            # Calculate height of child sliders if any
+            slider_attr = self._get_slider_attr_for_item(item)
+            child_sliders_height = 0
+            if slider_attr in self.parent_child_mapping:
+                child_sliders_height = len(self.parent_child_mapping[slider_attr]) * 30
+            
+            new_height = slider_height + details_height + child_sliders_height + 20  # Add space for details and children
         
         item.setSizeHint(QSize(item.sizeHint().width(), new_height))
+    
+    def _get_slider_attr_for_item(self, item):
+        """Find the slider attribute associated with a list item."""
+        for attr, slider in self.sliders.items():
+            main_widget = self.sliders_list.itemWidget(item)
+            if main_widget and main_widget.findChild(QSlider) == slider:
+                return attr
+        return None
 
     def create_slider(self, default_value=50):
         """Create a new slider with a value label."""
@@ -317,11 +454,7 @@ class ReorderableSliders(QWidget):
         return details_texts
     
     def set_slider_values(self, values_dict):
-        """Set multiple slider values from a dictionary.
-        
-        Args:
-            values_dict (dict): Dictionary mapping slider attribute names to values
-        """
+        """Set multiple slider values from a dictionary."""
         for slider_name, value in values_dict.items():
             if slider_name in self.sliders:
                 # Set the slider value and ensure it's within valid range
@@ -338,13 +471,31 @@ class ReorderableSliders(QWidget):
                         self.values[value_attr].setText(str(value))
                 except Exception as e:
                     print(f"Error setting value for slider {slider_name}: {e}")
+            
+            # Also set child slider values if they exist
+            elif slider_name in self.child_sliders:
+                try:
+                    value = max(0, min(100, int(value)))
+                    self.child_sliders[slider_name].set_value(value)
+                except Exception as e:
+                    print(f"Error setting value for child slider {slider_name}: {e}")
+    
+    def get_slider_values(self):
+        """Get all slider values in a dictionary."""
+        values = {}
+        
+        # Get parent slider values
+        for attr_name, slider in self.sliders.items():
+            values[attr_name] = slider.value()
+            
+        # Get child slider values
+        for attr_name, slider in self.child_sliders.items():
+            values[attr_name] = slider.get_value()
+            
+        return values
     
     def set_details_values(self, details_dict):
-        """Set multiple details texts from a dictionary.
-        
-        Args:
-            details_dict (dict): Dictionary mapping slider attribute names to details texts
-        """
+        """Set multiple details texts from a dictionary."""
         for slider_name, text in details_dict.items():
             if slider_name in self.details:
                 try:
@@ -355,6 +506,7 @@ class ReorderableSliders(QWidget):
     
     def enable_sliders(self, enable=True, filter_list=None):
         """Enable or disable sliders, optionally filtering by a list of names."""
+        # First handle parent sliders
         for name, slider in self.sliders.items():
             if filter_list is None or name in filter_list:
                 slider.setEnabled(enable)
@@ -366,6 +518,17 @@ class ReorderableSliders(QWidget):
                 # Also enable/disable the corresponding details widget
                 if name in self.details:
                     self.details[name].set_enabled(enable)
+                    
+                # Enable/disable child sliders if this is a parent
+                if name in self.parent_child_mapping:
+                    for child_attr in self.parent_child_mapping[name]:
+                        if child_attr in self.child_sliders:
+                            self.child_sliders[child_attr].set_enabled(enable)
+        
+        # Handle directly specified child sliders
+        for name, slider in self.child_sliders.items():
+            if filter_list is not None and name in filter_list:
+                slider.set_enabled(enable)
     
     def reorder_sliders_from_config(self, order):
         """Reorder sliders based on a list of augmentation types."""
@@ -376,6 +539,9 @@ class ReorderableSliders(QWidget):
         
         # Store slider configs keyed by slider attribute
         slider_configs = {}
+        child_slider_configs = {}
+        
+        # Save parent slider configs
         for slider_attr, slider in self.sliders.items():
             value = slider.value()
             enabled = slider.isEnabled()
@@ -422,8 +588,24 @@ class ReorderableSliders(QWidget):
                 'aug_type': self.slider_to_augmentation_type.get(slider_attr)
             }
         
-        # Remember the mapping of augmentation types
+        # Save child slider configs
+        for child_attr, child_slider in self.child_sliders.items():
+            child_slider_configs[child_attr] = {
+                'value': child_slider.get_value(),
+                'enabled': child_slider.slider.isEnabled(),
+                'label': child_slider.label.text(),
+                'parent': None  # Will be set based on parent_child_mapping
+            }
+            
+            # Find the parent of this child
+            for parent_attr, children in self.parent_child_mapping.items():
+                if child_attr in children:
+                    child_slider_configs[child_attr]['parent'] = parent_attr
+                    break
+        
+        # Remember the mapping of augmentation types and parent-child relationships
         old_mapping = self.slider_to_augmentation_type.copy()
+        old_parent_child = self.parent_child_mapping.copy()
         
         # Temporarily remove all sliders from display
         self.sliders_list.clear()
@@ -432,11 +614,14 @@ class ReorderableSliders(QWidget):
         old_sliders = self.sliders.copy()
         old_values = self.values.copy()
         old_details = self.details.copy()
+        old_child_sliders = self.child_sliders.copy()
         
         self.sliders.clear()
         self.values.clear()
         self.details.clear()
+        self.child_sliders.clear()
         self.slider_to_augmentation_type.clear()
+        self.parent_child_mapping.clear()
         
         # Re-add sliders in the desired order
         for aug_type in order:
@@ -463,6 +648,18 @@ class ReorderableSliders(QWidget):
                         value_edit.setEnabled(config['value_edit_enabled'])
                     if details_widget:
                         details_widget.set_enabled(config['enabled'])
+                    
+                    # Re-add child sliders for this parent
+                    for child_attr, child_config in child_slider_configs.items():
+                        if child_config['parent'] == slider_attr:
+                            child_slider = self.add_child_slider(
+                                parent_attr=slider_attr,
+                                name=child_config['label'],
+                                child_attr=child_attr,
+                                default_value=child_config['value']
+                            )
+                            if child_slider:
+                                child_slider.set_enabled(child_config['enabled'])
         
         # Add any sliders that weren't in the order but were in the original set
         for slider_attr, config in slider_configs.items():
@@ -485,11 +682,25 @@ class ReorderableSliders(QWidget):
                     value_edit.setEnabled(config['value_edit_enabled'])
                 if details_widget:
                     details_widget.set_enabled(config['enabled'])
-                    
+                
+                # Re-add child sliders for this parent
+                for child_attr, child_config in child_slider_configs.items():
+                    if child_config['parent'] == slider_attr:
+                        child_slider = self.add_child_slider(
+                            parent_attr=slider_attr,
+                            name=child_config['label'],
+                            child_attr=child_attr,
+                            default_value=child_config['value']
+                        )
+                        if child_slider:
+                            child_slider.set_enabled(child_config['enabled'])
+                            
     def clear(self):
         """Clear all sliders from the list."""
         self.sliders_list.clear()
         self.sliders.clear()
         self.values.clear()
         self.details.clear()
+        self.child_sliders.clear()
         self.slider_to_augmentation_type.clear()
+        self.parent_child_mapping.clear()
