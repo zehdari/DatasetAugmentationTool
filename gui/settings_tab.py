@@ -44,6 +44,18 @@ class AugmentationSettingsTab(QWidget):
         self.start_time = 0
         self.last_time_update = 0
         
+        # Define default details text for sliders
+        self.default_details_text = {
+            "mirror_slider": "Mirrors the image horizontally (left to right). This creates a flipped version of the original image. The percentage controls how often mirroring is applied.",
+            "rotate_slider": "Rotates the image. Higher percentage means rotation will be applied more frequently.",
+            "rotation_random_vs_90_slider": "Controls the type of rotation:\n- Higher values mean more random rotation angles (0-360 degrees)\n- Lower values favor fixed 90° rotations (0°, 90°, 180°, 270°)",
+            "crop_slider": "Crops a portion of the image. Higher percentage means cropping will be applied more frequently.",
+            "maintain_aspect_ratio_slider": "When cropping:\n- Higher values are more likely to maintain the original aspect ratio\n- Lower values allow stretching/warping of the image",
+            "zoom_slider": "Zooms in or out of the image. Higher percentage means zoom operations will be applied more frequently.",
+            "zoom_in_vs_out_slider": "Controls zoom direction:\n- Higher values favor zooming out (showing more background)\n- Lower values favor zooming in (magnifying details)",
+            "overlay_slider": "Overlays objects from one image onto another. Higher percentage means overlays will be applied more frequently. Requires overlay directory selection."
+        }
+        
         self.initUI()
         self.installEventFilter(ClickFilter(self))
         
@@ -92,12 +104,13 @@ class AugmentationSettingsTab(QWidget):
         ]
 
         for slider_info in self.slider_data:
-            slider, value_edit = self.reorderable_sliders.add_slider(
+            slider, value_edit, details_widget = self.reorderable_sliders.add_slider(
                 slider_info["name"], 
                 slider_info["object"], 
                 slider_info["value_object"],
                 default_value=50,
-                augmentation_type=slider_info["aug_type"]
+                augmentation_type=slider_info["aug_type"],
+                details_text=self.default_details_text.get(slider_info["object"], "")
             )
             
             # Store references for backward compatibility
@@ -299,6 +312,9 @@ class AugmentationSettingsTab(QWidget):
         # Get the current order of sliders
         augmentation_order = self.get_augmentation_order()
         
+        # Get details text for all sliders
+        details_texts = self.reorderable_sliders.get_details_texts()
+        
         config_data = {
             "augmentation_order": augmentation_order,
             "crop_probability": self.crop_slider.value(),
@@ -309,7 +325,8 @@ class AugmentationSettingsTab(QWidget):
             "rotation_random_vs_90": self.rotation_random_vs_90_slider.value(),
             "zoom_in_vs_out": self.zoom_in_vs_out_slider.value(),
             "zoom_probability": self.zoom_slider.value(),
-            "skip_existing": self.skip_existing_checkbox.isChecked()
+            "skip_existing": self.skip_existing_checkbox.isChecked(),
+            "details_texts": details_texts
         }
         self.parent.config_manager.save_config(config_data)
 
@@ -328,6 +345,10 @@ class AugmentationSettingsTab(QWidget):
                 "zoom_slider": config_data.get("zoom_probability", 0)
             }
             self.reorderable_sliders.set_slider_values(slider_values)
+            
+            # Set details texts if available
+            if "details_texts" in config_data:
+                self.reorderable_sliders.set_details_values(config_data["details_texts"])
             
             # Set skip existing checkbox
             self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", False))
