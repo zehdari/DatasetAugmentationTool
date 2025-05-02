@@ -7,6 +7,7 @@ import os
 import re
 from utils.ui_components import ClickFilter, CustomLineEdit
 from utils.dataset_manager import DatasetManager
+from utils.augmentation_config_loader import AugmentationConfigLoader
 from gui.class_colors_manager import ClassColorsManager
 from gui.reorderable_sliders import ReorderableSliders
 
@@ -14,13 +15,13 @@ class AugmentationSettingsTab(QWidget):
     def __init__(self, parent):
         super().__init__()
         self.parent = parent
-        self.skip_augmentations = {
-            'Zoom': [],
-            'Crop': [],
-            'Rotate': [],
-            'Mirror': [],
-            'Overlay': []
-        }
+        
+        # Load augmentation configuration from YAML
+        self.config_loader = AugmentationConfigLoader('config/augmentation_config.yaml')
+        self.config_loader.load_config()
+        
+        # Initialize skip augmentations dictionary from config
+        self.skip_augmentations = {category: [] for category in self.config_loader.get_skip_categories()}
 
         self.class_colors = {}
         self.id_to_label = {}
@@ -28,7 +29,7 @@ class AugmentationSettingsTab(QWidget):
         # Initialize class colors manager
         self.class_colors_manager = ClassColorsManager(self)
         
-        # Default augmentation settings
+        # Default parameter values (will be overridden by loaded config if available)
         self.rotation_random_vs_90 = [25, 75]
         self.zoom_in_vs_out_weights = [40, 60]
         self.zoom_in_min_padding = 0.05
@@ -43,18 +44,6 @@ class AugmentationSettingsTab(QWidget):
         self.is_cancelled = False
         self.start_time = 0
         self.last_time_update = 0
-        
-        # Define default details text for sliders
-        self.default_details_text = {
-            "mirror_slider": "Mirrors the image horizontally (left to right). This creates a flipped version of the original image. The percentage controls how often mirroring is applied.",
-            "rotate_slider": "Rotates the image. Higher percentage means rotation will be applied more frequently.",
-            "rotation_random_vs_90_slider": "Controls the type of rotation:\n- Higher values mean more random rotation angles (0-360 degrees)\n- Lower values favor fixed 90° rotations (0°, 90°, 180°, 270°)",
-            "crop_slider": "Crops a portion of the image. Higher percentage means cropping will be applied more frequently.",
-            "maintain_aspect_ratio_slider": "When cropping:\n- Higher values are more likely to maintain the original aspect ratio\n- Lower values allow stretching/warping of the image",
-            "zoom_slider": "Zooms in or out of the image. Higher percentage means zoom operations will be applied more frequently.",
-            "zoom_in_vs_out_slider": "Controls zoom direction:\n- Higher values favor zooming out (showing more background)\n- Lower values favor zooming in (magnifying details)",
-            "overlay_slider": "Overlays objects from one image onto another. Higher percentage means overlays will be applied more frequently. Requires overlay directory selection."
-        }
         
         self.initUI()
         self.installEventFilter(ClickFilter(self))
@@ -91,71 +80,32 @@ class AugmentationSettingsTab(QWidget):
         # Initialize reorderable sliders component
         self.reorderable_sliders = ReorderableSliders(self)
         
-        # Define parent and child slider relationships
-        self.parent_child_relationships = {
-            "rotate_slider": [
-                {"child_attr": "rotation_random_vs_90_slider", "name": "Rotation (0 to 360) vs 90 %: "}
-            ],
-            "crop_slider": [
-                {"child_attr": "maintain_aspect_ratio_slider", "name": "Maintain Aspect Ratio on Crop %: "}
-            ],
-            "zoom_slider": [
-                {"child_attr": "zoom_in_vs_out_slider", "name": "Zoom In vs Out %: "}
-            ]
-        }
+        # Get configured augmentations, child sliders, and float params
+        augmentations = self.config_loader.get_augmentations()
+        child_sliders_config = self.config_loader.get_child_sliders()
+        float_params_config = self.config_loader.get_float_params()
         
-        # Define float input relationships for zoom and overlay sliders
-        self.float_input_relationships = {
-            "zoom_slider": [
-                {"input_attr": "zoom_in_min_padding", "name": "Zoom In Min Padding:", "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01},
-                {"input_attr": "zoom_in_max_padding", "name": "Zoom In Max Padding:", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
-                {"input_attr": "zoom_out_min_padding", "name": "Zoom Out Min Padding:", "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01},
-                {"input_attr": "zoom_out_max_padding", "name": "Zoom Out Max Padding:", "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.01}
-            ],
-            "overlay_slider": [
-                {"input_attr": "overlay_min_scale", "name": "Overlay Min Scale:", "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.01},
-                {"input_attr": "overlay_max_scale", "name": "Overlay Max Scale:", "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}
-            ]
-        }
-        
-        # Add parent sliders to the component
-        self.slider_data = [
-            {"name": "Mirror % Probability:", "object": "mirror_slider", "value_object": "mirror_value", "aug_type": "mirror"},
-            {"name": "Rotate % Probability:", "object": "rotate_slider", "value_object": "rotate_value", "aug_type": "rotate"},
-            {"name": "Crop % Probability:", "object": "crop_slider", "value_object": "crop_value", "aug_type": "crop"},
-            {"name": "Zoom % Probability:", "object": "zoom_slider", "value_object": "zoom_value", "aug_type": "zoom"},
-            {"name": "Overlay % Probability:", "object": "overlay_slider", "value_object": "overlay_value", "aug_type": "overlay"}
-        ]
-
-        # First, add all parent sliders
-        for slider_info in self.slider_data:
+        # Process parent sliders based on configuration
+        for aug_type, aug_info in augmentations.items():
             slider, value_edit, details_widget = self.reorderable_sliders.add_slider(
-                slider_info["name"], 
-                slider_info["object"], 
-                slider_info["value_object"],
-                default_value=50,
-                augmentation_type=slider_info["aug_type"],
-                details_text=self.default_details_text.get(slider_info["object"], "")
+                name=aug_info["name"],
+                slider_attr=aug_info["slider_attr"],
+                value_attr=aug_info["value_attr"],
+                default_value=aug_info.get("default_value", 50),
+                augmentation_type=aug_type,
+                details_text=aug_info.get("details", "")
             )
             
             # Store references for backward compatibility
-            setattr(self, slider_info["object"], slider)
-            setattr(self, slider_info["value_object"], value_edit)
+            setattr(self, aug_info["slider_attr"], slider)
+            setattr(self, aug_info["value_attr"], value_edit)
         
-        # Then, add all child sliders to their parents
-        # Initialize child slider defaults
-        child_defaults = {
-            "rotation_random_vs_90_slider": 25,
-            "maintain_aspect_ratio_slider": 50,
-            "zoom_in_vs_out_slider": 40
-        }
-        
-        # Add child sliders
-        for parent_attr, children in self.parent_child_relationships.items():
+        # Process child sliders based on configuration
+        for parent_attr, children in child_sliders_config.items():
             for child_info in children:
-                child_attr = child_info["child_attr"]
+                child_attr = child_info["attr"]
                 child_name = child_info["name"]
-                child_default = child_defaults.get(child_attr, 50)
+                child_default = child_info.get("default", 50)
                 
                 child_slider = self.reorderable_sliders.add_child_slider(
                     parent_attr=parent_attr,
@@ -168,15 +118,15 @@ class AugmentationSettingsTab(QWidget):
                 if child_slider:
                     setattr(self, child_attr, child_slider)
         
-        # Add float inputs for zoom and overlay sliders
-        for parent_attr, inputs in self.float_input_relationships.items():
+        # Process float inputs based on configuration
+        for parent_attr, inputs in float_params_config.items():
             for input_info in inputs:
-                input_attr = input_info["input_attr"]
+                input_attr = input_info["attr"]
                 input_name = input_info["name"]
-                default_value = input_info["default"]
-                min_value = input_info["min"]
-                max_value = input_info["max"]
-                step = input_info["step"]
+                default_value = input_info.get("default", 0.5)
+                min_value = input_info.get("min", 0.0)
+                max_value = input_info.get("max", 1.0)
+                step = input_info.get("step", 0.01)
                 
                 float_input = self.reorderable_sliders.add_float_input(
                     parent_attr=parent_attr,
@@ -187,14 +137,9 @@ class AugmentationSettingsTab(QWidget):
                     max_value=max_value,
                     step=step
                 )
-                
-                # We don't need to store references to these fields in class attributes
-                # as they will be accessed through the reorderable_sliders component
         
-        # Connect child slider signals
+        # Connect signals
         self.reorderable_sliders.childSliderValueChanged.connect(self.on_child_slider_value_changed)
-        
-        # Connect float input signals
         self.reorderable_sliders.floatValueChanged.connect(self.on_float_value_changed)
         
         weights_layout.addWidget(self.reorderable_sliders)
@@ -217,25 +162,35 @@ class AugmentationSettingsTab(QWidget):
         weights_layout.addLayout(settings_buttons_layout)
         weights_group.setLayout(weights_layout)
 
-        # Skip Augmentations
+        # Skip Augmentations - dynamically create based on config
         skip_colors_layout = QSplitter(Qt.Orientation.Vertical)
 
         self.skip_group = QGroupBox("Skip Augmentations for Folders")
         self.skip_layout = QVBoxLayout()
         self.skip_table = QTableWidget()
-        self.skip_table.setColumnCount(7)  
-        self.skip_table.setHorizontalHeaderLabels(['Folder', 'Zoom', 'Crop', 'Rotate', 'Mirror', 'Overlay', 'Skip All'])
+        
+        # Set columns based on configured skip categories
+        skip_categories = self.config_loader.get_skip_categories()
+        self.skip_table.setColumnCount(len(skip_categories) + 2)  # +2 for Folder and Skip All columns
+        
+        # Set table headers
+        headers = ['Folder'] + skip_categories + ['Skip All']
+        self.skip_table.setHorizontalHeaderLabels(headers)
+        
         self.skip_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.skip_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        for col in range(1, 7):
+        
+        # Set column widths
+        for col in range(1, len(skip_categories) + 2):
             self.skip_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.skip_table.setColumnWidth(col, 50)
+        
         self.skip_layout.addWidget(self.skip_table)
         self.skip_group.setLayout(self.skip_layout)
         
         skip_colors_layout.addWidget(self.skip_group)
 
-        # Class Colors Group - Use the class colors manager widget
+        # Class Colors Group - use the class colors manager widget
         self.class_color_group = QGroupBox("Class Colors")
         self.class_colors_layout = QVBoxLayout()
         
@@ -318,13 +273,37 @@ class AugmentationSettingsTab(QWidget):
         enable_normal_sliders = bool(self.parent.dataset_root)
         enable_overlay_sliders = bool(self.parent.overlay_image_dir)
         
-        # Create filter lists for normal and overlay sliders
-        normal_sliders = [
-            'mirror_slider', 'crop_slider', 'zoom_slider', 'rotate_slider',
-            'rotation_random_vs_90_slider', 'zoom_in_vs_out_slider', 'maintain_aspect_ratio_slider',
-            'zoom_in_min_padding', 'zoom_in_max_padding', 'zoom_out_min_padding', 'zoom_out_max_padding'
-        ]
-        overlay_sliders = ['overlay_slider', 'overlay_min_scale', 'overlay_max_scale']
+        # Get all augmentation sliders from config
+        augmentations = self.config_loader.get_augmentations()
+        
+        # Create lists for normal and overlay sliders
+        normal_sliders = []
+        overlay_sliders = []
+        
+        # Categorize sliders based on augmentation type
+        for aug_type, aug_info in augmentations.items():
+            slider_attr = aug_info["slider_attr"]
+            if aug_type == "overlay":
+                overlay_sliders.append(slider_attr)
+            else:
+                normal_sliders.append(slider_attr)
+                
+        # Add child sliders to normal sliders
+        child_sliders_config = self.config_loader.get_child_sliders()
+        for parent_attr, children in child_sliders_config.items():
+            if parent_attr not in overlay_sliders:  # Only add children of normal sliders
+                for child_info in children:
+                    normal_sliders.append(child_info["attr"])
+                    
+        # Add float inputs to appropriate lists
+        float_params_config = self.config_loader.get_float_params()
+        for parent_attr, inputs in float_params_config.items():
+            if parent_attr in overlay_sliders:
+                for input_info in inputs:
+                    overlay_sliders.append(input_info["attr"])
+            else:
+                for input_info in inputs:
+                    normal_sliders.append(input_info["attr"])
         
         # Enable/disable normal sliders
         self.reorderable_sliders.enable_sliders(enable_normal_sliders, normal_sliders)
@@ -333,37 +312,31 @@ class AugmentationSettingsTab(QWidget):
         self.reorderable_sliders.enable_sliders(enable_overlay_sliders, overlay_sliders)
 
         # Update skip table checkboxes
-        for row in range(self.skip_table.rowCount()):
-            overlay_checkbox = self.skip_table.cellWidget(row, 5)
-            if overlay_checkbox:
-                overlay_checkbox.setEnabled(enable_overlay_sliders)
+        skip_categories = self.config_loader.get_skip_categories()
+        overlay_col = next((i for i, cat in enumerate(skip_categories, 1) if cat == "Overlay"), None)
+        
+        if overlay_col:
+            for row in range(self.skip_table.rowCount()):
+                overlay_checkbox = self.skip_table.cellWidget(row, overlay_col)
+                if overlay_checkbox:
+                    overlay_checkbox.setEnabled(enable_overlay_sliders)
 
     def get_augmentation_order(self):
         """Get the current order of augmentations from the sliders list"""
         return self.reorderable_sliders.get_augmentation_order()
 
     def get_skip_augmentations(self):
-        skip_augmentations = {
-            'Zoom': [],
-            'Crop': [],
-            'Rotate': [],
-            'Mirror': [],
-            'Overlay': []
-        }
+        skip_categories = self.config_loader.get_skip_categories()
+        skip_augmentations = {category: [] for category in skip_categories}
         
         # Map column indices to augmentation types
-        col_to_aug = {
-            1: 'Zoom',
-            2: 'Crop',
-            3: 'Rotate',
-            4: 'Mirror',
-            5: 'Overlay'
-        }
+        col_to_aug = {idx+1: category for idx, category in enumerate(skip_categories)}
         
         # Check each row in the skip table
         for row in range(self.skip_table.rowCount()):
             folder_name = self.skip_table.item(row, 0).text()
-            skip_all = self.skip_table.cellWidget(row, 6).isChecked()
+            skip_all_col = len(skip_categories) + 1
+            skip_all = self.skip_table.cellWidget(row, skip_all_col).isChecked()
             
             if skip_all:
                 # If "Skip All" is checked, add folder to all augmentation types
@@ -400,31 +373,52 @@ class AugmentationSettingsTab(QWidget):
             float_values.get('overlay_max_scale', self.overlay_min_max_scale[1])
         ]
         
-        # Get all parameters needed for augmentation
+        # Initialize parameters dictionary with common parameters
         params = {
             'skip_existing': self.skip_existing_checkbox.isChecked(),
             'skip_augmentations': self.get_skip_augmentations(),
-            'mirror_weights': [slider_values.get('mirror_slider', 50), 
-                            100 - slider_values.get('mirror_slider', 50)],
-            'crop_weights': [slider_values.get('crop_slider', 50), 
-                        100 - slider_values.get('crop_slider', 50)],
-            'zoom_weights': [slider_values.get('zoom_slider', 50), 
-                        100 - slider_values.get('zoom_slider', 50)],
-            'rotate_weights': [slider_values.get('rotate_slider', 50), 
-                            100 - slider_values.get('rotate_slider', 50)],
-            'overlay_weights': ([slider_values.get('overlay_slider', 50), 
-                            100 - slider_values.get('overlay_slider', 50)] 
-                            if self.parent.overlay_image_dir else [0, 100]),
-            'rotation_random_vs_90_weights': [slider_values.get('rotation_random_vs_90_slider', 25), 
-                                            100 - slider_values.get('rotation_random_vs_90_slider', 25)],
-            'overlay_min_max_scale': self.overlay_min_max_scale,
-            'maintain_aspect_ratio_weights': [slider_values.get('maintain_aspect_ratio_slider', 50),
-                                        100 - slider_values.get('maintain_aspect_ratio_slider', 50)],
-            'zoom_in_vs_out_weights': [slider_values.get('zoom_in_vs_out_slider', 40),
-                                    100 - slider_values.get('zoom_in_vs_out_slider', 40)],
+            'augmentation_order': augmentation_order,
             'zoom_padding': self.zoom_padding,
-            'augmentation_order': augmentation_order
+            'overlay_min_max_scale': self.overlay_min_max_scale
         }
+        
+        # Get configured augmentations
+        augmentations = self.config_loader.get_augmentations()
+        
+        # Dynamically add parameters for all augmentation types
+        for aug_type, aug_info in augmentations.items():
+            slider_attr = aug_info["slider_attr"]
+            value = slider_values.get(slider_attr, aug_info.get("default_value", 50))
+            weight_param_name = f"{aug_type}_weights"
+            
+            # Special case for overlay - check if directory is selected
+            if aug_type == "overlay" and not self.parent.overlay_image_dir:
+                params[weight_param_name] = [0, 100]  # Disable overlay
+            else:
+                params[weight_param_name] = [value, 100 - value]
+        
+        # Add parameters for child sliders
+        child_sliders_config = self.config_loader.get_child_sliders()
+        for parent_attr, children in child_sliders_config.items():
+            for child_info in children:
+                child_attr = child_info["attr"]
+                value = slider_values.get(child_attr, child_info.get("default", 50))
+                
+                # Map well-known child sliders to their parameter names
+                if child_attr == "rotation_random_vs_90_slider":
+                    params["rotation_random_vs_90_weights"] = [value, 100 - value]
+                elif child_attr == "maintain_aspect_ratio_slider":
+                    params["maintain_aspect_ratio_weights"] = [value, 100 - value]
+                elif child_attr == "zoom_in_vs_out_slider":
+                    params["zoom_in_vs_out_weights"] = [value, 100 - value]
+                else:
+                    # For custom child sliders, use a predictable naming pattern
+                    weight_param_name = f"{child_attr.replace('_slider', '')}_weights"
+                    params[weight_param_name] = [value, 100 - value]
+        
+        # Add all float parameters as is
+        for attr, value in float_values.items():
+            params[attr] = value
         
         return params
         
@@ -434,12 +428,20 @@ class AugmentationSettingsTab(QWidget):
     
     def toggle_skip_all(self, state, row):
         skip_all_checked = state == Qt.CheckState.Checked
-        for col in range(1, 6):  # Update to check relevant columns
+        skip_categories = self.config_loader.get_skip_categories()
+        
+        # Update each augmentation checkbox based on Skip All state
+        for col in range(1, len(skip_categories) + 1):
             checkbox = self.skip_table.cellWidget(row, col)
-            checkbox.setEnabled(not skip_all_checked)
-        if not self.parent.overlay_image_dir:
-            overlay_checkbox = self.skip_table.cellWidget(row, 5)
-            overlay_checkbox.setEnabled(False)
+            if checkbox:
+                checkbox.setEnabled(not skip_all_checked)
+        
+        # Special handling for overlay if needed
+        overlay_col = next((i for i, cat in enumerate(skip_categories, 1) if cat == "Overlay"), None)
+        if overlay_col and not self.parent.overlay_image_dir:
+            overlay_checkbox = self.skip_table.cellWidget(row, overlay_col)
+            if overlay_checkbox:
+                overlay_checkbox.setEnabled(False)
 
     def save_current_config(self):
         # Get the current order of sliders
@@ -454,74 +456,92 @@ class AugmentationSettingsTab(QWidget):
         # Get all float input values
         float_values = self.reorderable_sliders.get_float_values()
         
+        # Create config data dictionary
         config_data = {
             "augmentation_order": augmentation_order,
-            "crop_probability": slider_values.get("crop_slider", 50),
-            "maintain_aspect_ratio": slider_values.get("maintain_aspect_ratio_slider", 50),
-            "mirror_probability": slider_values.get("mirror_slider", 50),
-            "overlay_probability": slider_values.get("overlay_slider", 50),
-            "rotate_probability": slider_values.get("rotate_slider", 50),
-            "rotation_random_vs_90": slider_values.get("rotation_random_vs_90_slider", 25),
-            "zoom_in_vs_out": slider_values.get("zoom_in_vs_out_slider", 40),
-            "zoom_probability": slider_values.get("zoom_slider", 50),
             "skip_existing": self.skip_existing_checkbox.isChecked(),
-            "details_texts": details_texts,
-            # Add float values
-            "zoom_in_min_padding": float_values.get("zoom_in_min_padding", self.zoom_in_min_padding),
-            "zoom_in_max_padding": float_values.get("zoom_in_max_padding", self.zoom_in_max_padding),
-            "zoom_out_min_padding": float_values.get("zoom_out_min_padding", self.zoom_out_min_padding),
-            "zoom_out_max_padding": float_values.get("zoom_out_max_padding", self.zoom_out_max_padding),
-            "overlay_min_scale": float_values.get("overlay_min_scale", self.overlay_min_max_scale[0]),
-            "overlay_max_scale": float_values.get("overlay_max_scale", self.overlay_min_max_scale[1])
+            "details_texts": details_texts
         }
+        
+        # Add all slider values
+        for slider_attr, value in slider_values.items():
+            # Convert slider_attr to a more readable config key
+            config_key = slider_attr.replace("_slider", "_probability")
+            config_data[config_key] = value
+            
+        # Add all float values
+        for float_attr, value in float_values.items():
+            config_data[float_attr] = value
+            
+        # Save to JSON file
         self.parent.config_manager.save_config(config_data)
 
     def load_existing_config(self):
         config_data = self.parent.config_manager.load_config()
         if config_data:
-            # Set slider values
-            slider_values = {
-                "crop_slider": config_data.get("crop_probability", 0),
-                "maintain_aspect_ratio_slider": config_data.get("maintain_aspect_ratio", 0),
-                "mirror_slider": config_data.get("mirror_probability", 0),
-                "overlay_slider": config_data.get("overlay_probability", 0),
-                "rotate_slider": config_data.get("rotate_probability", 0),
-                "rotation_random_vs_90_slider": config_data.get("rotation_random_vs_90", 0),
-                "zoom_in_vs_out_slider": config_data.get("zoom_in_vs_out", 0),
-                "zoom_slider": config_data.get("zoom_probability", 0)
-            }
+            # Get the known augmentations
+            augmentations = self.config_loader.get_augmentations()
+            
+            # Set slider values for known augmentations
+            slider_values = {}
+            for aug_type, aug_info in augmentations.items():
+                slider_attr = aug_info["slider_attr"]
+                config_key = slider_attr.replace("_slider", "_probability")
+                if config_key in config_data:
+                    slider_values[slider_attr] = config_data[config_key]
+                    
+            # Set child slider values
+            child_sliders_config = self.config_loader.get_child_sliders()
+            for parent_attr, children in child_sliders_config.items():
+                for child_info in children:
+                    child_attr = child_info["attr"]
+                    config_key = child_attr.replace("_slider", "")
+                    if config_key in config_data:
+                        slider_values[child_attr] = config_data[config_key]
+            
+            # Update all slider values
             self.reorderable_sliders.set_slider_values(slider_values)
             
-            # Set float input values if available
-            float_values = {
-                "zoom_in_min_padding": config_data.get("zoom_in_min_padding", self.zoom_in_min_padding),
-                "zoom_in_max_padding": config_data.get("zoom_in_max_padding", self.zoom_in_max_padding),
-                "zoom_out_min_padding": config_data.get("zoom_out_min_padding", self.zoom_out_min_padding),
-                "zoom_out_max_padding": config_data.get("zoom_out_max_padding", self.zoom_out_max_padding),
-                "overlay_min_scale": config_data.get("overlay_min_scale", self.overlay_min_max_scale[0]),
-                "overlay_max_scale": config_data.get("overlay_max_scale", self.overlay_min_max_scale[1])
-            }
+            # Set float input values
+            float_values = {}
+            float_params_config = self.config_loader.get_float_params()
+            for parent_attr, inputs in float_params_config.items():
+                for input_info in inputs:
+                    input_attr = input_info["attr"]
+                    if input_attr in config_data:
+                        float_values[input_attr] = config_data[input_attr]
+            
+            # Update all float input values
             self.reorderable_sliders.set_float_values(float_values)
             
             # Update class attributes to match loaded values
+            if "zoom_in_min_padding" in float_values:
+                self.zoom_in_min_padding = float_values["zoom_in_min_padding"]
+            if "zoom_in_max_padding" in float_values:
+                self.zoom_in_max_padding = float_values["zoom_in_max_padding"]
+            if "zoom_out_min_padding" in float_values:
+                self.zoom_out_min_padding = float_values["zoom_out_min_padding"]
+            if "zoom_out_max_padding" in float_values:
+                self.zoom_out_max_padding = float_values["zoom_out_max_padding"]
+                
             self.zoom_padding = [
-                float_values["zoom_in_min_padding"],
-                float_values["zoom_in_max_padding"],
-                float_values["zoom_out_min_padding"],
-                float_values["zoom_out_max_padding"]
+                self.zoom_in_min_padding,
+                self.zoom_in_max_padding,
+                self.zoom_out_min_padding,
+                self.zoom_out_max_padding
             ]
             
-            self.overlay_min_max_scale = [
-                float_values["overlay_min_scale"],
-                float_values["overlay_max_scale"]
-            ]
+            if "overlay_min_scale" in float_values:
+                self.overlay_min_max_scale[0] = float_values["overlay_min_scale"]
+            if "overlay_max_scale" in float_values:
+                self.overlay_min_max_scale[1] = float_values["overlay_max_scale"]
             
             # Set details texts if available
             if "details_texts" in config_data:
                 self.reorderable_sliders.set_details_values(config_data["details_texts"])
             
             # Set skip existing checkbox
-            self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", False))
+            self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", True))
             
             # Apply saved order if available
             if "augmentation_order" in config_data:
@@ -533,8 +553,8 @@ class AugmentationSettingsTab(QWidget):
         dataset_root = self.parent.dataset_root
         
         # Clear previous data structures
-        for key in self.skip_augmentations.keys():
-            self.skip_augmentations[key] = []
+        skip_categories = self.config_loader.get_skip_categories()
+        self.skip_augmentations = {category: [] for category in skip_categories}
         
         # Clear class mappings
         self.id_to_label.clear()
@@ -566,6 +586,9 @@ class AugmentationSettingsTab(QWidget):
         if hasattr(self.parent, 'image_viewer_tab'):
             self.parent.image_viewer_tab.folder_list.clear()
             
+        # Get the number of skip categories + folder column + skip all column
+        total_columns = len(skip_categories) + 2
+        
         for row, folder in enumerate(folders):
             folder_item = QTableWidgetItem(folder)
             folder_item.setFlags(folder_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make folder names read-only
@@ -575,13 +598,20 @@ class AugmentationSettingsTab(QWidget):
                 list_item = QListWidgetItem(folder)
                 self.parent.image_viewer_tab.folder_list.addItem(list_item)
                 
-            for col in range(1, 7):  # Update the range to include the new column
+            # Create checkboxes for each skip category + Skip All
+            for col in range(1, total_columns):
                 checkbox = QCheckBox()
-                checkbox.setStyleSheet("margin-left: 0px; margin-right: auto;")  # Align checkbox to the left 
-                if col == 5:
-                    checkbox.setEnabled(False)
-                if col == 6:  # Connect the new checkbox to the slot
+                checkbox.setStyleSheet("margin-left: 0px; margin-right: auto;")  # Align checkbox to the left
+                
+                # Special handling for overlay if it exists
+                category_idx = col - 1
+                if category_idx < len(skip_categories) and skip_categories[category_idx] == "Overlay":
+                    checkbox.setEnabled(False if not self.parent.overlay_image_dir else True)
+                    
+                # Connect Skip All checkbox
+                if col == total_columns - 1:  # Last column is "Skip All"
                     checkbox.stateChanged.connect(lambda state, r=row: self.toggle_skip_all(state, r))
+                    
                 self.skip_table.setCellWidget(row, col, checkbox)
 
         # Sort images numerically
