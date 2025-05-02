@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QListWidget, QListWidgetItem, QSizePolicy,
-                             QAbstractItemView, QPushButton, QTextEdit, QFrame)
+                             QAbstractItemView, QPushButton, QTextEdit, QFrame, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QIcon, QPixmap
 from utils.ui_components import CustomLineEdit
@@ -69,6 +69,13 @@ class CollapsibleDetails(QWidget):
         self.child_sliders_layout.setSpacing(0)  # Minimal spacing
         self.child_sliders_container.setVisible(False)
         
+        # Container for float input fields (new)
+        self.float_inputs_container = QWidget()
+        self.float_inputs_layout = QVBoxLayout(self.float_inputs_container)
+        self.float_inputs_layout.setContentsMargins(10, 0, 0, 0)  # Add left indent
+        self.float_inputs_layout.setSpacing(0)  # Minimal spacing
+        self.float_inputs_container.setVisible(False)
+        
         # Add a horizontal line above the details
         self.separator = QFrame()
         self.separator.setFrameShape(QFrame.Shape.HLine)
@@ -78,12 +85,14 @@ class CollapsibleDetails(QWidget):
         
         layout.addWidget(self.separator)
         layout.addWidget(self.child_sliders_container)
+        layout.addWidget(self.float_inputs_container)
         layout.addWidget(self.details_edit)
         
     def toggle_details(self):
         self.collapsed = not self.collapsed
         self.details_edit.setVisible(not self.collapsed)
         self.child_sliders_container.setVisible(not self.collapsed)
+        self.float_inputs_container.setVisible(not self.collapsed)
         self.separator.setVisible(not self.collapsed)
         
         # Update button text
@@ -184,7 +193,69 @@ class ChildSlider(QWidget):
         self.slider.setEnabled(enabled)
         self.value_edit.setEnabled(enabled)
         self.label.setEnabled(enabled)
+
+
+class FloatInputField(QWidget):
+    """A float input field that appears in a parent's details section."""
+    
+    # Signal emitted when the float value changes
+    valueChanged = pyqtSignal(str, float)
+    
+    def __init__(self, name, attr_name, default_value=0.5, min_value=0.0, max_value=1.0, step=0.05, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.value = default_value
+        self.name = name
+        self.attr_name = attr_name
+        self.min_value = min_value
+        self.max_value = max_value
+        self.step = step
+        self.initUI()
         
+    def initUI(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)  # Minimal spacing between items
+        
+        # Create label
+        self.label = QLabel(self.name)
+        self.label.setMinimumWidth(180)
+        self.label.setStyleSheet("padding: 0px; margin: 0px;")  # Remove padding
+        
+        # Create spin box
+        self.spin_box = QDoubleSpinBox()
+        self.spin_box.setRange(self.min_value, self.max_value)
+        self.spin_box.setValue(self.value)
+        self.spin_box.setSingleStep(self.step)
+        self.spin_box.setDecimals(2)
+        self.spin_box.setFixedHeight(24)
+        self.spin_box.setFixedWidth(70)
+        
+        # Connect signals
+        self.spin_box.valueChanged.connect(self.on_value_changed)
+        
+        # Add to layout
+        layout.addWidget(self.label)
+        layout.addWidget(self.spin_box)
+        layout.addStretch(1)  # Add stretch to push widgets to the left
+        
+        self.setFixedHeight(30)  # Fixed height for input row
+        
+    def on_value_changed(self, value):
+        self.value = value
+        self.valueChanged.emit(self.attr_name, value)
+        
+    def get_value(self):
+        return self.value
+    
+    def set_value(self, value):
+        self.value = max(self.min_value, min(self.max_value, value))
+        self.spin_box.setValue(self.value)
+        
+    def set_enabled(self, enabled):
+        self.spin_box.setEnabled(enabled)
+        self.label.setEnabled(enabled)
+
 
 class ReorderableSliders(QWidget):
     """A widget that displays a list of sliders that can be reordered by drag and drop."""
@@ -192,16 +263,19 @@ class ReorderableSliders(QWidget):
     # Signal emitted when any slider value changes
     sliderValueChanged = pyqtSignal(str, int)
     childSliderValueChanged = pyqtSignal(str, int)
+    floatValueChanged = pyqtSignal(str, float)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
         self.sliders = {}  # Dictionary to store slider references
         self.child_sliders = {}  # Dictionary to store child slider references
+        self.float_inputs = {}  # Dictionary to store float input references
         self.values = {}   # Dictionary to store value edit references
         self.details = {}  # Dictionary to store details widgets
         self.slider_to_augmentation_type = {}  # Mapping from slider names to augmentation types
         self.parent_child_mapping = {}  # Dictionary to track parent-child relationships
+        self.parent_float_mapping = {}  # Dictionary to track parent-float input relationships
         
         self.initUI()
         
@@ -213,7 +287,7 @@ class ReorderableSliders(QWidget):
         self.sliders_list = QListWidget()
         self.sliders_list.setDragEnabled(True)
         self.sliders_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.sliders_list.setMinimumHeight(250)  # Reduced from 300
+        self.sliders_list.setMinimumHeight(350)  # Increased from 250 to accommodate more inputs
         self.sliders_list.setSpacing(0)  # Minimal spacing between items
         
         self.sliders_list.setStyleSheet("""
@@ -355,18 +429,51 @@ class ReorderableSliders(QWidget):
         
         return child_slider
         
+    def add_float_input(self, parent_attr, name, input_attr, default_value=0.5, min_value=0.0, max_value=1.0, step=0.05):
+        """Add a float input field to a parent slider's details section."""
+        if parent_attr not in self.details:
+            return None
+            
+        # Create float input field
+        float_input = FloatInputField(name, input_attr, default_value, min_value, max_value, step)
+        
+        # Add to parent's details section
+        parent_details = self.details[parent_attr]
+        parent_details.float_inputs_layout.addWidget(float_input)
+        
+        # Store reference to float input
+        self.float_inputs[input_attr] = float_input
+        
+        # Add to parent-float mapping
+        if parent_attr not in self.parent_float_mapping:
+            self.parent_float_mapping[parent_attr] = []
+        self.parent_float_mapping[parent_attr].append(input_attr)
+        
+        # Connect value changed signal
+        float_input.valueChanged.connect(
+            lambda attr, value: self.floatValueChanged.emit(attr, value)
+        )
+        
+        return float_input
+        
     def _adjust_item_size(self, item, is_collapsed, slider_height, details_height):
         """Adjust the size of a list item based on collapse state"""
         if is_collapsed:  # Details were just hidden
             new_height = slider_height + 16  # Just the slider + small space for toggle button
         else:  # Details were just shown
-            # Calculate height of child sliders if any
+            # Calculate height of child sliders and float inputs if any
             slider_attr = self._get_slider_attr_for_item(item)
-            child_sliders_height = 0
-            if slider_attr in self.parent_child_mapping:
-                child_sliders_height = len(self.parent_child_mapping[slider_attr]) * 30
+            child_elements_height = 0
             
-            new_height = slider_height + details_height + child_sliders_height + 20  # Add space for details and children
+            # Calculate height for child sliders
+            if slider_attr in self.parent_child_mapping:
+                child_elements_height += len(self.parent_child_mapping[slider_attr]) * 30
+            
+            # Calculate height for float inputs
+            if slider_attr in self.parent_float_mapping:
+                child_elements_height += len(self.parent_float_mapping[slider_attr]) * 30
+            
+            new_height = slider_height + details_height + child_elements_height + 20  # Add space for details and children
         
         item.setSizeHint(QSize(item.sizeHint().width(), new_height))
     
@@ -480,6 +587,16 @@ class ReorderableSliders(QWidget):
                 except Exception as e:
                     print(f"Error setting value for child slider {slider_name}: {e}")
     
+    def set_float_values(self, values_dict):
+        """Set multiple float input values from a dictionary."""
+        for input_name, value in values_dict.items():
+            if input_name in self.float_inputs:
+                try:
+                    float_value = float(value)
+                    self.float_inputs[input_name].set_value(float_value)
+                except Exception as e:
+                    print(f"Error setting value for float input {input_name}: {e}")
+    
     def get_slider_values(self):
         """Get all slider values in a dictionary."""
         values = {}
@@ -491,6 +608,15 @@ class ReorderableSliders(QWidget):
         # Get child slider values
         for attr_name, slider in self.child_sliders.items():
             values[attr_name] = slider.get_value()
+            
+        return values
+    
+    def get_float_values(self):
+        """Get all float input values in a dictionary."""
+        values = {}
+        
+        for attr_name, input_field in self.float_inputs.items():
+            values[attr_name] = input_field.get_value()
             
         return values
     
@@ -524,11 +650,22 @@ class ReorderableSliders(QWidget):
                     for child_attr in self.parent_child_mapping[name]:
                         if child_attr in self.child_sliders:
                             self.child_sliders[child_attr].set_enabled(enable)
+                
+                # Enable/disable float inputs if this is a parent
+                if name in self.parent_float_mapping:
+                    for float_attr in self.parent_float_mapping[name]:
+                        if float_attr in self.float_inputs:
+                            self.float_inputs[float_attr].set_enabled(enable)
         
         # Handle directly specified child sliders
         for name, slider in self.child_sliders.items():
             if filter_list is not None and name in filter_list:
                 slider.set_enabled(enable)
+        
+        # Handle directly specified float inputs
+        for name, input_field in self.float_inputs.items():
+            if filter_list is not None and name in filter_list:
+                input_field.set_enabled(enable)
     
     def reorder_sliders_from_config(self, order):
         """Reorder sliders based on a list of augmentation types."""
@@ -540,6 +677,7 @@ class ReorderableSliders(QWidget):
         # Store slider configs keyed by slider attribute
         slider_configs = {}
         child_slider_configs = {}
+        float_input_configs = {}
         
         # Save parent slider configs
         for slider_attr, slider in self.sliders.items():
@@ -602,10 +740,29 @@ class ReorderableSliders(QWidget):
                 if child_attr in children:
                     child_slider_configs[child_attr]['parent'] = parent_attr
                     break
+                    
+        # Save float input configs
+        for float_attr, float_input in self.float_inputs.items():
+            float_input_configs[float_attr] = {
+                'value': float_input.get_value(),
+                'enabled': float_input.spin_box.isEnabled(),
+                'label': float_input.label.text(),
+                'min_value': float_input.min_value,
+                'max_value': float_input.max_value,
+                'step': float_input.step,
+                'parent': None  # Will be set based on parent_float_mapping
+            }
+            
+            # Find the parent of this float input
+            for parent_attr, inputs in self.parent_float_mapping.items():
+                if float_attr in inputs:
+                    float_input_configs[float_attr]['parent'] = parent_attr
+                    break
         
         # Remember the mapping of augmentation types and parent-child relationships
         old_mapping = self.slider_to_augmentation_type.copy()
         old_parent_child = self.parent_child_mapping.copy()
+        old_parent_float = self.parent_float_mapping.copy()
         
         # Temporarily remove all sliders from display
         self.sliders_list.clear()
@@ -615,75 +772,48 @@ class ReorderableSliders(QWidget):
         old_values = self.values.copy()
         old_details = self.details.copy()
         old_child_sliders = self.child_sliders.copy()
+        old_float_inputs = self.float_inputs.copy()
         
         self.sliders.clear()
         self.values.clear()
         self.details.clear()
         self.child_sliders.clear()
+        self.float_inputs.clear()
         self.slider_to_augmentation_type.clear()
         self.parent_child_mapping.clear()
+        self.parent_float_mapping.clear()
         
-        # Re-add sliders in the desired order
+        # Create a new ordered list of slider attributes based on augmentation order
+        ordered_sliders = []
         for aug_type in order:
             if aug_type in aug_to_slider:
                 slider_attr = aug_to_slider[aug_type]
-                value_attr = slider_attr.replace('slider', 'value')
-                
-                if slider_attr in slider_configs:
-                    config = slider_configs[slider_attr]
-                    
-                    # Add the slider with the original label, value and details
-                    slider, value_edit, details_widget = self.add_slider(
-                        name=config['label'],
-                        slider_attr=slider_attr,
-                        value_attr=value_attr,
-                        default_value=config['value'],
-                        augmentation_type=config['aug_type'],
-                        details_text=config['details_text']
-                    )
-                    
-                    # Restore enabled state
-                    slider.setEnabled(config['enabled'])
-                    if value_edit:
-                        value_edit.setEnabled(config['value_edit_enabled'])
-                    if details_widget:
-                        details_widget.set_enabled(config['enabled'])
-                    
-                    # Re-add child sliders for this parent
-                    for child_attr, child_config in child_slider_configs.items():
-                        if child_config['parent'] == slider_attr:
-                            child_slider = self.add_child_slider(
-                                parent_attr=slider_attr,
-                                name=child_config['label'],
-                                child_attr=child_attr,
-                                default_value=child_config['value']
-                            )
-                            if child_slider:
-                                child_slider.set_enabled(child_config['enabled'])
+                ordered_sliders.append(slider_attr)
         
-        # Add any sliders that weren't in the order but were in the original set
-        for slider_attr, config in slider_configs.items():
-            if slider_attr not in self.sliders:
-                value_attr = slider_attr.replace('slider', 'value')
-                
-                # Add the slider with the original label, value and details
+        # Add any remaining sliders not in the order
+        for slider_attr in slider_configs:
+            if slider_attr not in ordered_sliders:
+                ordered_sliders.append(slider_attr)
+        
+        # Recreate sliders in the new order
+        for slider_attr in ordered_sliders:
+            config = slider_configs.get(slider_attr)
+            if config:
+                # Recreate the slider
                 slider, value_edit, details_widget = self.add_slider(
                     name=config['label'],
                     slider_attr=slider_attr,
-                    value_attr=value_attr,
+                    value_attr=slider_attr.replace('slider', 'value'),
                     default_value=config['value'],
                     augmentation_type=config['aug_type'],
                     details_text=config['details_text']
                 )
                 
-                # Restore enabled state
+                # Set enabled state
                 slider.setEnabled(config['enabled'])
-                if value_edit:
-                    value_edit.setEnabled(config['value_edit_enabled'])
-                if details_widget:
-                    details_widget.set_enabled(config['enabled'])
+                value_edit.setEnabled(config['value_edit_enabled'])
                 
-                # Re-add child sliders for this parent
+                # Recreate child sliders for this parent
                 for child_attr, child_config in child_slider_configs.items():
                     if child_config['parent'] == slider_attr:
                         child_slider = self.add_child_slider(
@@ -694,13 +824,18 @@ class ReorderableSliders(QWidget):
                         )
                         if child_slider:
                             child_slider.set_enabled(child_config['enabled'])
-                            
-    def clear(self):
-        """Clear all sliders from the list."""
-        self.sliders_list.clear()
-        self.sliders.clear()
-        self.values.clear()
-        self.details.clear()
-        self.child_sliders.clear()
-        self.slider_to_augmentation_type.clear()
-        self.parent_child_mapping.clear()
+                
+                # Recreate float inputs for this parent
+                for float_attr, float_config in float_input_configs.items():
+                    if float_config['parent'] == slider_attr:
+                        float_input = self.add_float_input(
+                            parent_attr=slider_attr,
+                            name=float_config['label'],
+                            input_attr=float_attr,
+                            default_value=float_config['value'],
+                            min_value=float_config['min_value'],
+                            max_value=float_config['max_value'],
+                            step=float_config['step']
+                        )
+                        if float_input:
+                            float_input.set_enabled(float_config['enabled'])

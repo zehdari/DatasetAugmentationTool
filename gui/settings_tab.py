@@ -104,6 +104,20 @@ class AugmentationSettingsTab(QWidget):
             ]
         }
         
+        # Define float input relationships for zoom and overlay sliders
+        self.float_input_relationships = {
+            "zoom_slider": [
+                {"input_attr": "zoom_in_min_padding", "name": "Zoom In Min Padding:", "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01},
+                {"input_attr": "zoom_in_max_padding", "name": "Zoom In Max Padding:", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
+                {"input_attr": "zoom_out_min_padding", "name": "Zoom Out Min Padding:", "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01},
+                {"input_attr": "zoom_out_max_padding", "name": "Zoom Out Max Padding:", "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.01}
+            ],
+            "overlay_slider": [
+                {"input_attr": "overlay_min_scale", "name": "Overlay Min Scale:", "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.01},
+                {"input_attr": "overlay_max_scale", "name": "Overlay Max Scale:", "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}
+            ]
+        }
+        
         # Add parent sliders to the component
         self.slider_data = [
             {"name": "Mirror % Probability:", "object": "mirror_slider", "value_object": "mirror_value", "aug_type": "mirror"},
@@ -154,8 +168,34 @@ class AugmentationSettingsTab(QWidget):
                 if child_slider:
                     setattr(self, child_attr, child_slider)
         
+        # Add float inputs for zoom and overlay sliders
+        for parent_attr, inputs in self.float_input_relationships.items():
+            for input_info in inputs:
+                input_attr = input_info["input_attr"]
+                input_name = input_info["name"]
+                default_value = input_info["default"]
+                min_value = input_info["min"]
+                max_value = input_info["max"]
+                step = input_info["step"]
+                
+                float_input = self.reorderable_sliders.add_float_input(
+                    parent_attr=parent_attr,
+                    name=input_name,
+                    input_attr=input_attr,
+                    default_value=default_value,
+                    min_value=min_value,
+                    max_value=max_value,
+                    step=step
+                )
+                
+                # We don't need to store references to these fields in class attributes
+                # as they will be accessed through the reorderable_sliders component
+        
         # Connect child slider signals
         self.reorderable_sliders.childSliderValueChanged.connect(self.on_child_slider_value_changed)
+        
+        # Connect float input signals
+        self.reorderable_sliders.floatValueChanged.connect(self.on_float_value_changed)
         
         weights_layout.addWidget(self.reorderable_sliders)
         
@@ -235,6 +275,26 @@ class AugmentationSettingsTab(QWidget):
         elif hasattr(self, child_attr) and child_attr == "maintain_aspect_ratio_slider":
             # Update maintain_aspect_ratio weights
             self.maintain_aspect_ratio_weights = [value, 100 - value]
+            
+    def on_float_value_changed(self, input_attr, value):
+        """Handle float input value changes."""
+        # Update class attributes or data structures as needed
+        if input_attr == "zoom_in_min_padding":
+            self.zoom_in_min_padding = value
+            self.zoom_padding[0] = value
+        elif input_attr == "zoom_in_max_padding":
+            self.zoom_in_max_padding = value
+            self.zoom_padding[1] = value
+        elif input_attr == "zoom_out_min_padding":
+            self.zoom_out_min_padding = value
+            self.zoom_padding[2] = value
+        elif input_attr == "zoom_out_max_padding":
+            self.zoom_out_max_padding = value
+            self.zoom_padding[3] = value
+        elif input_attr == "overlay_min_scale":
+            self.overlay_min_max_scale[0] = value
+        elif input_attr == "overlay_max_scale":
+            self.overlay_min_max_scale[1] = value
 
     def select_dataset_root(self):
         dir_name = QFileDialog.getExistingDirectory(self, "Select Dataset Root")
@@ -261,9 +321,10 @@ class AugmentationSettingsTab(QWidget):
         # Create filter lists for normal and overlay sliders
         normal_sliders = [
             'mirror_slider', 'crop_slider', 'zoom_slider', 'rotate_slider',
-            'rotation_random_vs_90_slider', 'zoom_in_vs_out_slider', 'maintain_aspect_ratio_slider'
+            'rotation_random_vs_90_slider', 'zoom_in_vs_out_slider', 'maintain_aspect_ratio_slider',
+            'zoom_in_min_padding', 'zoom_in_max_padding', 'zoom_out_min_padding', 'zoom_out_max_padding'
         ]
-        overlay_sliders = ['overlay_slider']
+        overlay_sliders = ['overlay_slider', 'overlay_min_scale', 'overlay_max_scale']
         
         # Enable/disable normal sliders
         self.reorderable_sliders.enable_sliders(enable_normal_sliders, normal_sliders)
@@ -323,6 +384,22 @@ class AugmentationSettingsTab(QWidget):
         # Get slider values
         slider_values = self.reorderable_sliders.get_slider_values()
         
+        # Get float input values
+        float_values = self.reorderable_sliders.get_float_values()
+        
+        # Update zoom_padding and overlay_min_max_scale with current values from float inputs
+        self.zoom_padding = [
+            float_values.get('zoom_in_min_padding', self.zoom_in_min_padding),
+            float_values.get('zoom_in_max_padding', self.zoom_in_max_padding),
+            float_values.get('zoom_out_min_padding', self.zoom_out_min_padding),
+            float_values.get('zoom_out_max_padding', self.zoom_out_max_padding)
+        ]
+        
+        self.overlay_min_max_scale = [
+            float_values.get('overlay_min_scale', self.overlay_min_max_scale[0]),
+            float_values.get('overlay_max_scale', self.overlay_min_max_scale[1])
+        ]
+        
         # Get all parameters needed for augmentation
         params = {
             'skip_existing': self.skip_existing_checkbox.isChecked(),
@@ -350,7 +427,7 @@ class AugmentationSettingsTab(QWidget):
         }
         
         return params
-
+        
     def update_class_colors_table(self):
         # Delegate to the class colors manager
         self.class_colors_manager.update_class_colors_table(self.class_colors, self.id_to_label)
@@ -374,6 +451,9 @@ class AugmentationSettingsTab(QWidget):
         # Get all slider values
         slider_values = self.reorderable_sliders.get_slider_values()
         
+        # Get all float input values
+        float_values = self.reorderable_sliders.get_float_values()
+        
         config_data = {
             "augmentation_order": augmentation_order,
             "crop_probability": slider_values.get("crop_slider", 50),
@@ -385,7 +465,14 @@ class AugmentationSettingsTab(QWidget):
             "zoom_in_vs_out": slider_values.get("zoom_in_vs_out_slider", 40),
             "zoom_probability": slider_values.get("zoom_slider", 50),
             "skip_existing": self.skip_existing_checkbox.isChecked(),
-            "details_texts": details_texts
+            "details_texts": details_texts,
+            # Add float values
+            "zoom_in_min_padding": float_values.get("zoom_in_min_padding", self.zoom_in_min_padding),
+            "zoom_in_max_padding": float_values.get("zoom_in_max_padding", self.zoom_in_max_padding),
+            "zoom_out_min_padding": float_values.get("zoom_out_min_padding", self.zoom_out_min_padding),
+            "zoom_out_max_padding": float_values.get("zoom_out_max_padding", self.zoom_out_max_padding),
+            "overlay_min_scale": float_values.get("overlay_min_scale", self.overlay_min_max_scale[0]),
+            "overlay_max_scale": float_values.get("overlay_max_scale", self.overlay_min_max_scale[1])
         }
         self.parent.config_manager.save_config(config_data)
 
@@ -404,6 +491,30 @@ class AugmentationSettingsTab(QWidget):
                 "zoom_slider": config_data.get("zoom_probability", 0)
             }
             self.reorderable_sliders.set_slider_values(slider_values)
+            
+            # Set float input values if available
+            float_values = {
+                "zoom_in_min_padding": config_data.get("zoom_in_min_padding", self.zoom_in_min_padding),
+                "zoom_in_max_padding": config_data.get("zoom_in_max_padding", self.zoom_in_max_padding),
+                "zoom_out_min_padding": config_data.get("zoom_out_min_padding", self.zoom_out_min_padding),
+                "zoom_out_max_padding": config_data.get("zoom_out_max_padding", self.zoom_out_max_padding),
+                "overlay_min_scale": config_data.get("overlay_min_scale", self.overlay_min_max_scale[0]),
+                "overlay_max_scale": config_data.get("overlay_max_scale", self.overlay_min_max_scale[1])
+            }
+            self.reorderable_sliders.set_float_values(float_values)
+            
+            # Update class attributes to match loaded values
+            self.zoom_padding = [
+                float_values["zoom_in_min_padding"],
+                float_values["zoom_in_max_padding"],
+                float_values["zoom_out_min_padding"],
+                float_values["zoom_out_max_padding"]
+            ]
+            
+            self.overlay_min_max_scale = [
+                float_values["overlay_min_scale"],
+                float_values["overlay_max_scale"]
+            ]
             
             # Set details texts if available
             if "details_texts" in config_data:

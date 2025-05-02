@@ -1,0 +1,133 @@
+# augmentation_config.yaml
+augmentations:
+  mirror:
+    name: "Mirror % Probability:"
+    slider_attr: "mirror_slider"
+    value_attr: "mirror_value"
+    default_value: 50
+    details: "Mirrors the image horizontally (left to right). This creates a flipped version of the original image. The percentage controls how often mirroring is applied."
+  
+  rotate:
+    name: "Rotate % Probability:"
+    slider_attr: "rotate_slider" 
+    value_attr: "rotate_value"
+    default_value: 50
+    details: "Rotates the image. Higher percentage means rotation will be applied more frequently."
+  
+  crop:
+    name: "Crop % Probability:"
+    slider_attr: "crop_slider"
+    value_attr: "crop_value" 
+    default_value: 50
+    details: "Crops a portion of the image. Higher percentage means cropping will be applied more frequently."
+  
+  zoom:
+    name: "Zoom % Probability:"
+    slider_attr: "zoom_slider"
+    value_attr: "zoom_value"
+    default_value: 50
+    details: "Zooms in or out of the image. Higher percentage means zoom operations will be applied more frequently."
+  
+  overlay:
+    name: "Overlay % Probability:"
+    slider_attr: "overlay_slider"
+    value_attr: "overlay_value"
+    default_value: 50
+    details: "Overlays objects from one image onto another. Higher percentage means overlays will be applied more frequently. Requires overlay directory selection."
+  
+  # Example of a new augmentation type
+  blur:
+    name: "Blur % Probability:"
+    slider_attr: "blur_slider"
+    value_attr: "blur_value"
+    default_value: 30
+    details: "Applies a Gaussian blur to the image. Higher percentage means blur will be applied more frequently."
+
+# Skip categories (these appear as columns in the skip table)
+skip_categories:
+  - "Zoom"
+  - "Crop"
+  - "Rotate"
+  - "Mirror"
+  - "Overlay"
+  - "Blur"  # Added new category
+
+# Float parameters for sliders
+float_params:
+  zoom_slider:
+    - attr: "zoom_in_min_padding"
+      name: "Zoom In Min Padding:"
+      default: 0.05
+      min: 0.0
+      max: 1.0
+      step: 0.01
+    - attr: "zoom_in_max_padding"
+      name: "Zoom In Max Padding:"
+      default: 0.5
+      min: 0.0
+      max: 1.0
+      step: 0.01
+    - attr: "zoom_out_min_padding"
+      name: "Zoom Out Min Padding:"
+      default: 0.1
+      min: 0.0
+      max: 1.0
+      step: 0.01
+    - attr: "zoom_out_max_padding"
+      name: "Zoom Out Max Padding:"
+      default: 0.8
+      min: 0.0
+      max: 1.0
+      step: 0.01
+  
+  overlay_slider:
+    - attr: "overlay_min_scale"
+      name: "Overlay Min Scale:"
+      default: 0.3
+      min: 0.0
+      max: 1.0
+      step: 0.01
+    - attr: "overlay_max_scale"
+      name: "Overlay Max Scale:"
+      default: 1.0
+      min: 0.0
+      max: 2.0
+      step: 0.01
+  
+  # Example of float parameters for a new augmentation
+  blur_slider:
+    - attr: "blur_sigma_min"
+      name: "Blur Sigma Min:"
+      default: 0.5
+      min: 0.1
+      max: 5.0
+      step: 0.1
+    - attr: "blur_sigma_max"
+      name: "Blur Sigma Max:"
+      default: 3.0
+      min: 0.5
+      max: 10.0
+      step: 0.1
+
+# Child sliders for parent sliders
+child_sliders:
+  rotate_slider:
+    - attr: "rotation_random_vs_90_slider"
+      name: "Rotation (0 to 360) vs 90 %: "
+      default: 25
+  
+  crop_slider:
+    - attr: "maintain_aspect_ratio_slider"
+      name: "Maintain Aspect Ratio on Crop %: "
+      default: 50
+  
+  zoom_slider:
+    - attr: "zoom_in_vs_out_slider"
+      name: "Zoom In vs Out %: "
+      default: 40
+  
+  # Example of child sliders for a new augmentation
+  blur_slider:
+    - attr: "blur_gaussian_vs_motion_slider"
+      name: "Gaussian vs Motion Blur %: "
+      default: 75
