@@ -506,14 +506,23 @@ class ImageAugmenter:
         return image, polygons
 
     def augment_image(self, image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, 
-                     mirror_weights, crop_weights, overlay_weights, rotate_weights, 
-                     rotation_random_vs_90_weights, overlay_min_max_scale, 
-                     maintain_aspect_ratio_weights, zoom_weights, zoom_in_vs_out_weights, 
-                     zoom_padding, coco_image, augmentation_order=None):
+                mirror_weights, crop_weights, overlay_weights, rotate_weights, 
+                rotation_random_vs_90_weights, maintain_aspect_ratio_weights, zoom_weights, 
+                zoom_in_vs_out_weights, 
+                # Replace compound parameters with individual ones
+                zoom_in_min_padding=0.1, zoom_in_max_padding=0.3,
+                zoom_out_min_padding=0.1, zoom_out_max_padding=0.5,
+                overlay_min_scale=0.3, overlay_max_scale=1.0,
+                coco_image=None, augmentation_order=None, **kwargs):
         
         # Define the default augmentation order if none is provided
         if augmentation_order is None:
             augmentation_order = ["mirror", "crop", "zoom", "rotate", "overlay"]
+        
+        # Create compound parameters from individual ones
+        zoom_padding = [zoom_in_min_padding, zoom_in_max_padding, 
+                    zoom_out_min_padding, zoom_out_max_padding]
+        overlay_min_max_scale = [overlay_min_scale, overlay_max_scale]
         
         # Create a mapping of augmentation types to their functions and parameters
         augmentation_functions = {
@@ -544,13 +553,42 @@ class ImageAugmenter:
             }
         }
         
+        # Support for additional augmentation types provided in kwargs
+        for aug_type, aug_params in kwargs.items():
+            if aug_type.endswith('_weights') and aug_type not in augmentation_functions:
+                # Extract the base augmentation type (remove '_weights' suffix)
+                base_type = aug_type[:-8]  # Remove '_weights'
+                
+                # Check if we have a method for this augmentation type
+                method_name = f"augment_{base_type}"
+                if hasattr(self, method_name) and callable(getattr(self, method_name)):
+                    # Create a function that will call the method dynamically
+                    aug_method = getattr(self, method_name)
+                    
+                    # Get any additional parameters for this augmentation
+                    method_params = {}
+                    for param_key, param_value in kwargs.items():
+                        if param_key.startswith(f"{base_type}_") and param_key != aug_type:
+                            # Extract parameter name (remove 'base_type_' prefix)
+                            param_name = param_key[len(base_type)+1:]
+                            method_params[param_name] = param_value
+                    
+                    # Add the augmentation function to the dictionary
+                    augmentation_functions[base_type] = {
+                        "func": lambda img, polys, t=base_type, m=aug_method, p=method_params, w=aug_params: 
+                                m(img, polys, **p) if random.choices([True, False], weights=w, k=1)[0] 
+                                else (img, polys),
+                        "skip_key": base_type.capitalize(),
+                        "needs_polygons": True  # Default to True for safety
+                    }
+        
         # Apply augmentations in the specified order
         for aug_type in augmentation_order:
             if aug_type in augmentation_functions:
                 aug_info = augmentation_functions[aug_type]
                 
                 # Skip this augmentation if specified for current subfolder
-                if current_subfolder in skip_augmentations[aug_info["skip_key"]]:
+                if current_subfolder in skip_augmentations.get(aug_info["skip_key"], []):
                     continue
                     
                 # Skip if we need polygons but don't have any

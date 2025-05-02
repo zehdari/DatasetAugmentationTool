@@ -63,7 +63,7 @@ def process_single_image_worker(args):
                          for i in range(1, len(parts), 2)]
                 polygons.append(coords)
         
-        # Extract the subset of parameters needed for augmentation
+        # Extract the parameters needed for augmentation
         augmentation_params = {
             'skip_augmentations': params['skip_augmentations'],
             'mirror_weights': params['mirror_weights'],
@@ -71,13 +71,21 @@ def process_single_image_worker(args):
             'overlay_weights': params['overlay_weights'],
             'rotate_weights': params['rotate_weights'],
             'rotation_random_vs_90_weights': params['rotation_random_vs_90_weights'],
-            'overlay_min_max_scale': params['overlay_min_max_scale'],
             'maintain_aspect_ratio_weights': params['maintain_aspect_ratio_weights'],
             'zoom_weights': params['zoom_weights'],
             'zoom_in_vs_out_weights': params['zoom_in_vs_out_weights'],
-            'zoom_padding': params['zoom_padding'],
             'augmentation_order': params.get('augmentation_order')
         }
+        
+        # Add individual parameters for zoom padding and overlay scale
+        augmentation_params.update({
+            'zoom_in_min_padding': params.get('zoom_in_min_padding', 0.1),
+            'zoom_in_max_padding': params.get('zoom_in_max_padding', 0.3),
+            'zoom_out_min_padding': params.get('zoom_out_min_padding', 0.1),
+            'zoom_out_max_padding': params.get('zoom_out_max_padding', 0.5),
+            'overlay_min_scale': params.get('overlay_min_scale', 0.3),
+            'overlay_max_scale': params.get('overlay_max_scale', 1.0)
+        })
         
         # Perform augmentation
         augmenter = ImageAugmenter()
@@ -106,7 +114,6 @@ def process_single_image_worker(args):
         
     except Exception as e:
         return False, f"Error processing {relative_path}: {str(e)}"
-    
 class AugmentationWorker(QThread):
     progress = pyqtSignal(int)
     progress_log = pyqtSignal(str)

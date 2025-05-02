@@ -23,27 +23,20 @@ class AugmentationSettingsTab(QWidget):
         # Initialize skip augmentations dictionary from config
         self.skip_augmentations = {category: [] for category in self.config_loader.get_skip_categories()}
 
+        # Store UI element references
+        self.sliders = {}  # Slider references by slider_attr
+        self.slider_values = {}  # Value references by value_attr
+        self.child_sliders = {}  # Child slider references by attr
+        self.float_inputs = {}  # Float input references by attr
+        
+        # Store parameter values dynamically
+        self.param_values = {}  # All parameter values indexed by parameter name
+        
         self.class_colors = {}
         self.id_to_label = {}
         
         # Initialize class colors manager
         self.class_colors_manager = ClassColorsManager(self)
-        
-        # Default parameter values (will be overridden by loaded config if available)
-        self.rotation_random_vs_90 = [25, 75]
-        self.zoom_in_vs_out_weights = [40, 60]
-        self.zoom_in_min_padding = 0.05
-        self.zoom_in_max_padding = 0.5
-        self.zoom_out_min_padding = 0.1
-        self.zoom_out_max_padding = 0.8
-        self.zoom_padding = [self.zoom_in_min_padding, self.zoom_in_max_padding, 
-                            self.zoom_out_min_padding, self.zoom_out_max_padding]
-        self.maintain_aspect_ratio_weights = [50, 50]
-        self.overlay_min_max_scale = [0.3, 1.0]
-        
-        self.is_cancelled = False
-        self.start_time = 0
-        self.last_time_update = 0
         
         self.initUI()
         self.installEventFilter(ClickFilter(self))
@@ -87,18 +80,25 @@ class AugmentationSettingsTab(QWidget):
         
         # Process parent sliders based on configuration
         for aug_type, aug_info in augmentations.items():
+            slider_attr = aug_info["slider_attr"]
+            value_attr = aug_info["value_attr"]
+            default_value = aug_info.get("default_value", 50)
+            
+            # Store default value
+            self.param_values[f"{aug_type}_weights"] = [default_value, 100 - default_value]
+            
             slider, value_edit, details_widget = self.reorderable_sliders.add_slider(
                 name=aug_info["name"],
-                slider_attr=aug_info["slider_attr"],
-                value_attr=aug_info["value_attr"],
-                default_value=aug_info.get("default_value", 50),
+                slider_attr=slider_attr,
+                value_attr=value_attr,
+                default_value=default_value,
                 augmentation_type=aug_type,
                 details_text=aug_info.get("details", "")
             )
             
-            # Store references for backward compatibility
-            setattr(self, aug_info["slider_attr"], slider)
-            setattr(self, aug_info["value_attr"], value_edit)
+            # Store references for later use
+            self.sliders[slider_attr] = slider
+            self.slider_values[value_attr] = value_edit
         
         # Process child sliders based on configuration
         for parent_attr, children in child_sliders_config.items():
@@ -107,6 +107,10 @@ class AugmentationSettingsTab(QWidget):
                 child_name = child_info["name"]
                 child_default = child_info.get("default", 50)
                 
+                # Store default value
+                param_name = f"{child_attr.replace('_slider', '')}_weights"
+                self.param_values[param_name] = [child_default, 100 - child_default]
+                
                 child_slider = self.reorderable_sliders.add_child_slider(
                     parent_attr=parent_attr,
                     name=child_name,
@@ -114,9 +118,9 @@ class AugmentationSettingsTab(QWidget):
                     default_value=child_default
                 )
                 
-                # Store references for backward compatibility
+                # Store reference
                 if child_slider:
-                    setattr(self, child_attr, child_slider)
+                    self.child_sliders[child_attr] = child_slider
         
         # Process float inputs based on configuration
         for parent_attr, inputs in float_params_config.items():
@@ -128,6 +132,9 @@ class AugmentationSettingsTab(QWidget):
                 max_value = input_info.get("max", 1.0)
                 step = input_info.get("step", 0.01)
                 
+                # Store default value directly in param_values
+                self.param_values[input_attr] = default_value
+                
                 float_input = self.reorderable_sliders.add_float_input(
                     parent_attr=parent_attr,
                     name=input_name,
@@ -137,10 +144,15 @@ class AugmentationSettingsTab(QWidget):
                     max_value=max_value,
                     step=step
                 )
+                
+                # Store reference
+                if float_input:
+                    self.float_inputs[input_attr] = float_input
         
         # Connect signals
         self.reorderable_sliders.childSliderValueChanged.connect(self.on_child_slider_value_changed)
         self.reorderable_sliders.floatValueChanged.connect(self.on_float_value_changed)
+        self.reorderable_sliders.sliderValueChanged.connect(self.on_slider_value_changed)
         
         weights_layout.addWidget(self.reorderable_sliders)
         
@@ -218,38 +230,32 @@ class AugmentationSettingsTab(QWidget):
         layout.addWidget(weights_skip_layout)
         self.setLayout(layout)
 
+    def on_slider_value_changed(self, slider_attr, value):
+        """Handle parent slider value changes."""
+        # Find augmentation type for this slider
+        aug_type = self.find_aug_type_for_slider(slider_attr)
+        if aug_type:
+            # Update weights parameter
+            self.param_values[f"{aug_type}_weights"] = [value, 100 - value]
+
+    def find_aug_type_for_slider(self, slider_attr):
+        """Find the augmentation type associated with a slider attribute."""
+        augmentations = self.config_loader.get_augmentations()
+        for aug_type, aug_info in augmentations.items():
+            if aug_info["slider_attr"] == slider_attr:
+                return aug_type
+        return None
+
     def on_child_slider_value_changed(self, child_attr, value):
         """Handle child slider value changes."""
-        # Update class attributes for backward compatibility
-        if hasattr(self, child_attr) and child_attr == "rotation_random_vs_90_slider":
-            # Update rotation_random_vs_90 weights
-            self.rotation_random_vs_90 = [value, 100 - value]
-        elif hasattr(self, child_attr) and child_attr == "zoom_in_vs_out_slider":
-            # Update zoom_in_vs_out weights
-            self.zoom_in_vs_out_weights = [value, 100 - value]
-        elif hasattr(self, child_attr) and child_attr == "maintain_aspect_ratio_slider":
-            # Update maintain_aspect_ratio weights
-            self.maintain_aspect_ratio_weights = [value, 100 - value]
+        # Update parameter value based on the child slider attribute
+        param_name = f"{child_attr.replace('_slider', '')}_weights"
+        self.param_values[param_name] = [value, 100 - value]
             
     def on_float_value_changed(self, input_attr, value):
         """Handle float input value changes."""
-        # Update class attributes or data structures as needed
-        if input_attr == "zoom_in_min_padding":
-            self.zoom_in_min_padding = value
-            self.zoom_padding[0] = value
-        elif input_attr == "zoom_in_max_padding":
-            self.zoom_in_max_padding = value
-            self.zoom_padding[1] = value
-        elif input_attr == "zoom_out_min_padding":
-            self.zoom_out_min_padding = value
-            self.zoom_padding[2] = value
-        elif input_attr == "zoom_out_max_padding":
-            self.zoom_out_max_padding = value
-            self.zoom_padding[3] = value
-        elif input_attr == "overlay_min_scale":
-            self.overlay_min_max_scale[0] = value
-        elif input_attr == "overlay_max_scale":
-            self.overlay_min_max_scale[1] = value
+        # Simply store the value directly by its attribute name
+        self.param_values[input_attr] = value
 
     def select_dataset_root(self):
         dir_name = QFileDialog.getExistingDirectory(self, "Select Dataset Root")
@@ -354,72 +360,21 @@ class AugmentationSettingsTab(QWidget):
         # Get the current augmentation order
         augmentation_order = self.get_augmentation_order()
         
-        # Get slider values
-        slider_values = self.reorderable_sliders.get_slider_values()
-        
-        # Get float input values
-        float_values = self.reorderable_sliders.get_float_values()
-        
-        # Update zoom_padding and overlay_min_max_scale with current values from float inputs
-        self.zoom_padding = [
-            float_values.get('zoom_in_min_padding', self.zoom_in_min_padding),
-            float_values.get('zoom_in_max_padding', self.zoom_in_max_padding),
-            float_values.get('zoom_out_min_padding', self.zoom_out_min_padding),
-            float_values.get('zoom_out_max_padding', self.zoom_out_max_padding)
-        ]
-        
-        self.overlay_min_max_scale = [
-            float_values.get('overlay_min_scale', self.overlay_min_max_scale[0]),
-            float_values.get('overlay_max_scale', self.overlay_min_max_scale[1])
-        ]
-        
         # Initialize parameters dictionary with common parameters
         params = {
             'skip_existing': self.skip_existing_checkbox.isChecked(),
             'skip_augmentations': self.get_skip_augmentations(),
-            'augmentation_order': augmentation_order,
-            'zoom_padding': self.zoom_padding,
-            'overlay_min_max_scale': self.overlay_min_max_scale
+            'augmentation_order': augmentation_order
         }
         
-        # Get configured augmentations
-        augmentations = self.config_loader.get_augmentations()
+        # Add all parameter values to the params dictionary
+        for param_name, value in self.param_values.items():
+            params[param_name] = value
         
-        # Dynamically add parameters for all augmentation types
-        for aug_type, aug_info in augmentations.items():
-            slider_attr = aug_info["slider_attr"]
-            value = slider_values.get(slider_attr, aug_info.get("default_value", 50))
-            weight_param_name = f"{aug_type}_weights"
+        # Only special case: handle overlay when directory is not selected
+        if "overlay_weights" in params and not self.parent.overlay_image_dir:
+            params["overlay_weights"] = [0, 100]  # Disable overlay
             
-            # Special case for overlay - check if directory is selected
-            if aug_type == "overlay" and not self.parent.overlay_image_dir:
-                params[weight_param_name] = [0, 100]  # Disable overlay
-            else:
-                params[weight_param_name] = [value, 100 - value]
-        
-        # Add parameters for child sliders
-        child_sliders_config = self.config_loader.get_child_sliders()
-        for parent_attr, children in child_sliders_config.items():
-            for child_info in children:
-                child_attr = child_info["attr"]
-                value = slider_values.get(child_attr, child_info.get("default", 50))
-                
-                # Map well-known child sliders to their parameter names
-                if child_attr == "rotation_random_vs_90_slider":
-                    params["rotation_random_vs_90_weights"] = [value, 100 - value]
-                elif child_attr == "maintain_aspect_ratio_slider":
-                    params["maintain_aspect_ratio_weights"] = [value, 100 - value]
-                elif child_attr == "zoom_in_vs_out_slider":
-                    params["zoom_in_vs_out_weights"] = [value, 100 - value]
-                else:
-                    # For custom child sliders, use a predictable naming pattern
-                    weight_param_name = f"{child_attr.replace('_slider', '')}_weights"
-                    params[weight_param_name] = [value, 100 - value]
-        
-        # Add all float parameters as is
-        for attr, value in float_values.items():
-            params[attr] = value
-        
         return params
         
     def update_class_colors_table(self):
@@ -444,11 +399,9 @@ class AugmentationSettingsTab(QWidget):
                 overlay_checkbox.setEnabled(False)
 
     def save_current_config(self):
+        """Save the current configuration to a YAML file"""
         # Get the current order of sliders
         augmentation_order = self.get_augmentation_order()
-        
-        # Get details text for all sliders
-        details_texts = self.reorderable_sliders.get_details_texts()
         
         # Get all slider values
         slider_values = self.reorderable_sliders.get_slider_values()
@@ -456,27 +409,37 @@ class AugmentationSettingsTab(QWidget):
         # Get all float input values
         float_values = self.reorderable_sliders.get_float_values()
         
+        # Get skip augmentations
+        skip_augmentations = self.get_skip_augmentations()
+        
         # Create config data dictionary
         config_data = {
             "augmentation_order": augmentation_order,
             "skip_existing": self.skip_existing_checkbox.isChecked(),
-            "details_texts": details_texts
+            "skip_augmentations": skip_augmentations
         }
         
         # Add all slider values
+        slider_values_section = {}
         for slider_attr, value in slider_values.items():
-            # Convert slider_attr to a more readable config key
+            # Use more readable names in the config
             config_key = slider_attr.replace("_slider", "_probability")
-            config_data[config_key] = value
+            slider_values_section[config_key] = value
+        
+        config_data["slider_values"] = slider_values_section
             
         # Add all float values
+        float_values_section = {}
         for float_attr, value in float_values.items():
-            config_data[float_attr] = value
+            float_values_section[float_attr] = value
+        
+        config_data["float_values"] = float_values_section
             
-        # Save to JSON file
+        # Save to YAML file
         self.parent.config_manager.save_config(config_data)
 
     def load_existing_config(self):
+        """Load configuration from a YAML file"""
         config_data = self.parent.config_manager.load_config()
         if config_data:
             # Get the known augmentations
@@ -484,70 +447,133 @@ class AugmentationSettingsTab(QWidget):
             
             # Set slider values for known augmentations
             slider_values = {}
+            
+            # Handle direct slider values or those in a nested section
+            if "slider_values" in config_data:
+                # New format with nested sections
+                slider_values_data = config_data["slider_values"]
+            else:
+                # Old format with flat structure
+                slider_values_data = config_data
+            
+            # Process augmentation sliders
             for aug_type, aug_info in augmentations.items():
                 slider_attr = aug_info["slider_attr"]
                 config_key = slider_attr.replace("_slider", "_probability")
-                if config_key in config_data:
-                    slider_values[slider_attr] = config_data[config_key]
+                
+                if config_key in slider_values_data:
+                    slider_values[slider_attr] = slider_values_data[config_key]
                     
-            # Set child slider values
+            # Process child slider values
             child_sliders_config = self.config_loader.get_child_sliders()
             for parent_attr, children in child_sliders_config.items():
                 for child_info in children:
                     child_attr = child_info["attr"]
-                    config_key = child_attr.replace("_slider", "")
-                    if config_key in config_data:
-                        slider_values[child_attr] = config_data[config_key]
+                    config_key = child_attr.replace("_slider", "_probability")
+                    
+                    if config_key in slider_values_data:
+                        slider_values[child_attr] = slider_values_data[config_key]
             
             # Update all slider values
             self.reorderable_sliders.set_slider_values(slider_values)
             
             # Set float input values
             float_values = {}
+            
+            # Handle direct float values or those in a nested section
+            if "float_values" in config_data:
+                # New format with nested sections
+                float_values_data = config_data["float_values"]
+            else:
+                # Old format with flat structure
+                float_values_data = config_data
+                
             float_params_config = self.config_loader.get_float_params()
             for parent_attr, inputs in float_params_config.items():
                 for input_info in inputs:
                     input_attr = input_info["attr"]
-                    if input_attr in config_data:
-                        float_values[input_attr] = config_data[input_attr]
+                    if input_attr in float_values_data:
+                        float_values[input_attr] = float_values_data[input_attr]
             
             # Update all float input values
             self.reorderable_sliders.set_float_values(float_values)
             
-            # Update class attributes to match loaded values
-            if "zoom_in_min_padding" in float_values:
-                self.zoom_in_min_padding = float_values["zoom_in_min_padding"]
-            if "zoom_in_max_padding" in float_values:
-                self.zoom_in_max_padding = float_values["zoom_in_max_padding"]
-            if "zoom_out_min_padding" in float_values:
-                self.zoom_out_min_padding = float_values["zoom_out_min_padding"]
-            if "zoom_out_max_padding" in float_values:
-                self.zoom_out_max_padding = float_values["zoom_out_max_padding"]
-                
-            self.zoom_padding = [
-                self.zoom_in_min_padding,
-                self.zoom_in_max_padding,
-                self.zoom_out_min_padding,
-                self.zoom_out_max_padding
-            ]
-            
-            if "overlay_min_scale" in float_values:
-                self.overlay_min_max_scale[0] = float_values["overlay_min_scale"]
-            if "overlay_max_scale" in float_values:
-                self.overlay_min_max_scale[1] = float_values["overlay_max_scale"]
-            
-            # Set details texts if available
-            if "details_texts" in config_data:
-                self.reorderable_sliders.set_details_values(config_data["details_texts"])
+            # Update parameter values in memory
+            self.update_param_values_from_sliders()
             
             # Set skip existing checkbox
             self.skip_existing_checkbox.setChecked(config_data.get("skip_existing", True))
+            
+            # Set skip augmentations if available
+            if "skip_augmentations" in config_data:
+                self.skip_augmentations = config_data["skip_augmentations"]
+                self.update_skip_table()
             
             # Apply saved order if available
             if "augmentation_order" in config_data:
                 self.reorderable_sliders.reorder_sliders_from_config(config_data["augmentation_order"])
             
             self.update_sliders_state()
+            
+    def update_skip_table(self):
+        """Update the skip table based on current skip_augmentations settings"""
+        skip_categories = self.config_loader.get_skip_categories()
+        
+        # Map skip category names to column indices
+        category_to_col = {category: idx + 1 for idx, category in enumerate(skip_categories)}
+        
+        # Update checkboxes in the skip table
+        for row in range(self.skip_table.rowCount()):
+            folder_name = self.skip_table.item(row, 0).text()
+            
+            # Check if this folder should be skipped for all categories
+            skip_all = True
+            for category in skip_categories:
+                if folder_name not in self.skip_augmentations.get(category, []):
+                    skip_all = False
+                    break
+            
+            # Set the "Skip All" checkbox
+            skip_all_col = len(skip_categories) + 1
+            skip_all_checkbox = self.skip_table.cellWidget(row, skip_all_col)
+            if skip_all_checkbox:
+                skip_all_checkbox.setChecked(skip_all)
+                
+            # Set individual category checkboxes
+            for category, col in category_to_col.items():
+                checkbox = self.skip_table.cellWidget(row, col)
+                if checkbox:
+                    is_skipped = folder_name in self.skip_augmentations.get(category, [])
+                    checkbox.setChecked(is_skipped)
+                    checkbox.setEnabled(not skip_all)
+            
+    def update_param_values_from_sliders(self):
+        """Update internal parameter values from slider states."""
+        # Get current slider values
+        slider_values = self.reorderable_sliders.get_slider_values()
+        float_values = self.reorderable_sliders.get_float_values()
+        
+        # Update parent slider parameters
+        augmentations = self.config_loader.get_augmentations()
+        for aug_type, aug_info in augmentations.items():
+            slider_attr = aug_info["slider_attr"]
+            if slider_attr in slider_values:
+                value = slider_values[slider_attr]
+                self.param_values[f"{aug_type}_weights"] = [value, 100 - value]
+        
+        # Update child slider parameters
+        child_sliders_config = self.config_loader.get_child_sliders()
+        for parent_attr, children in child_sliders_config.items():
+            for child_info in children:
+                child_attr = child_info["attr"]
+                if child_attr in slider_values:
+                    value = slider_values[child_attr]
+                    param_name = f"{child_attr.replace('_slider', '')}_weights"
+                    self.param_values[param_name] = [value, 100 - value]
+        
+        # Update float input parameters - directly store by attribute name
+        for input_attr, value in float_values.items():
+            self.param_values[input_attr] = value
 
     def scan_folders(self):
         dataset_root = self.parent.dataset_root

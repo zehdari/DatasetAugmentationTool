@@ -225,8 +225,17 @@ class ImageViewerTab(QWidget):
         zoom_in_vs_out_weights = params['zoom_in_vs_out_weights']
         rotation_random_vs_90_weights = params['rotation_random_vs_90_weights']
         overlay_weights = params['overlay_weights']
-        zoom_padding = params['zoom_padding']
         augmentation_order = params['augmentation_order']
+        
+        # Extract individual padding parameters
+        zoom_in_min_padding = params.get('zoom_in_min_padding', 0.1)
+        zoom_in_max_padding = params.get('zoom_in_max_padding', 0.3)
+        zoom_out_min_padding = params.get('zoom_out_min_padding', 0.1)
+        zoom_out_max_padding = params.get('zoom_out_max_padding', 0.5)
+        
+        # Extract individual overlay scale parameters
+        overlay_min_scale = params.get('overlay_min_scale', 0.3)
+        overlay_max_scale = params.get('overlay_max_scale', 1.0)
         
         # Import the augmenter from the core package
         from core.augment_data import ImageAugmenter
@@ -266,7 +275,7 @@ class ImageViewerTab(QWidget):
         # Initialize the augmenter
         augmenter = ImageAugmenter()
         
-        # Run the augment_image function
+        # Run the augment_image function with individual parameters
         augmented_image, augmented_polygons = augmenter.augment_image(
             image=image,
             polygons=polygons,
@@ -280,12 +289,17 @@ class ImageViewerTab(QWidget):
             overlay_weights=overlay_weights, 
             rotate_weights=rotate_weights,
             rotation_random_vs_90_weights=rotation_random_vs_90_weights,
-            overlay_min_max_scale=self.parent.settings_tab.overlay_min_max_scale,
             maintain_aspect_ratio_weights=maintain_aspect_ratio_weights, 
             zoom_weights=zoom_weights, 
             zoom_in_vs_out_weights=zoom_in_vs_out_weights,
-            zoom_padding=zoom_padding,
-            coco_image=overlay_image,  # Pass the image directly instead of the folder path
+            # Pass individual parameters instead of compound ones
+            zoom_in_min_padding=zoom_in_min_padding,
+            zoom_in_max_padding=zoom_in_max_padding,
+            zoom_out_min_padding=zoom_out_min_padding,
+            zoom_out_max_padding=zoom_out_max_padding,
+            overlay_min_scale=overlay_min_scale,
+            overlay_max_scale=overlay_max_scale,
+            coco_image=overlay_image,
             augmentation_order=augmentation_order
         )
 
