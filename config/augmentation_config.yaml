@@ -1,35 +1,35 @@
 # augmentation_config.yaml
 augmentations:
   mirror:
-    name: "Mirror % Probability:"
+    name: "Mirror"
     slider_attr: "mirror_slider"
     value_attr: "mirror_value"
     default_value: 50
     details: "Mirrors the image horizontally (left to right). This creates a flipped version of the original image. The percentage controls how often mirroring is applied."
   
   rotate:
-    name: "Rotate % Probability:"
+    name: "Rotate"
     slider_attr: "rotate_slider" 
     value_attr: "rotate_value"
     default_value: 50
     details: "Rotates the image. Higher percentage means rotation will be applied more frequently."
   
   crop:
-    name: "Crop % Probability:"
+    name: "Crop"
     slider_attr: "crop_slider"
     value_attr: "crop_value" 
     default_value: 50
     details: "Crops a portion of the image. Higher percentage means cropping will be applied more frequently."
   
   zoom:
-    name: "Zoom % Probability:"
+    name: "Zoom"
     slider_attr: "zoom_slider"
     value_attr: "zoom_value"
     default_value: 50
     details: "Zooms in or out of the image. Higher percentage means zoom operations will be applied more frequently."
   
   overlay:
-    name: "Overlay % Probability:"
+    name: "Overlay"
     slider_attr: "overlay_slider"
     value_attr: "overlay_value"
     default_value: 50
@@ -37,7 +37,7 @@ augmentations:
   
   # Example of a new augmentation type
   blur:
-    name: "Blur % Probability:"
+    name: "Blur"
     slider_attr: "blur_slider"
     value_attr: "blur_value"
     default_value: 30

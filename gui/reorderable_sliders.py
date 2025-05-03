@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QListWidget, QListWidgetItem, QSizePolicy,
-                             QAbstractItemView, QPushButton, QTextEdit, QFrame, QDoubleSpinBox)
+                             QAbstractItemView, QPushButton, QTextEdit, QFrame, QDoubleSpinBox,
+                             QComboBox, QMessageBox, QMenu)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap, QAction
 from utils.ui_components import CustomLineEdit
 
 
@@ -35,7 +36,7 @@ class CollapsibleDetails(QWidget):
                 text-align: left;
                 padding: 0px;
                 margin: 0px;
-                font-size: 10px;  /* Smaller font */
+                font-size: 10px;
                 color: #555;
             }
             QPushButton:hover {
@@ -58,7 +59,7 @@ class CollapsibleDetails(QWidget):
             QTextEdit {
                 font-size: 10px;
                 padding: 2px;
-                background-color: transparent;  /* Changed from #f8f8f8 to transparent */
+                background-color: transparent;
             }
         """)
         
@@ -277,18 +278,52 @@ class ReorderableSliders(QWidget):
         self.parent_child_mapping = {}  # Dictionary to track parent-child relationships
         self.parent_float_mapping = {}  # Dictionary to track parent-float input relationships
         
+        # Core augmentations that cannot be removed
+        self.core_augmentations = ["mirror", "crop", "zoom", "rotate", "overlay"]
+        
+        # Available augmentations from config
+        self.available_augmentations = []
+        self.active_augmentations = []
+        
         self.initUI()
         
     def initUI(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)  # Reduce spacing between list items
+        layout.setSpacing(5)
         
+        # Add header row
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Create header labels with the same spacing as the sliders
+        drag_handle_spacer = QLabel("")  # Empty space for drag handle column
+        drag_handle_spacer.setFixedWidth(20)  # Match the drag handle width
+        
+        augmentation_label = QLabel("Augmentation")
+        augmentation_label.setMinimumWidth(180)  # Match the label width in sliders
+        
+        spacer = QLabel("")  # This represents the slider space
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
+        probability_label = QLabel("Probability %")
+        probability_label.setFixedWidth(80)  # A bit wider than the value edit (35px) to accommodate the text
+        probability_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        header_layout.addWidget(drag_handle_spacer)
+        header_layout.addWidget(augmentation_label)
+        header_layout.addWidget(spacer)
+        header_layout.addWidget(probability_label)
+        
+        layout.addWidget(header_widget)
+        
+        # The slider list widget
         self.sliders_list = QListWidget()
         self.sliders_list.setDragEnabled(True)
         self.sliders_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.sliders_list.setMinimumHeight(350)  # Increased from 250 to accommodate more inputs
-        self.sliders_list.setSpacing(0)  # Minimal spacing between items
+        self.sliders_list.setMinimumHeight(350)
+        self.sliders_list.setSpacing(0)
         
         self.sliders_list.setStyleSheet("""
             QListWidget {
@@ -320,8 +355,225 @@ class ReorderableSliders(QWidget):
         """)
         
         layout.addWidget(self.sliders_list)
+        
+        # Add and Remove buttons at the bottom
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(5, 5, 5, 5)
+        
+        self.add_button = QPushButton("Add")
+        self.add_button.clicked.connect(self.show_add_menu)
+        
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.clicked.connect(self.show_remove_menu)
+        
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(self.add_button)
+        bottom_layout.addWidget(self.remove_button)
+        bottom_layout.addStretch()
+        
+        layout.addLayout(bottom_layout)
         self.setLayout(layout)
         
+        # Initialize augmentation controls
+        self.initialize_augmentation_controls()
+        
+    def initialize_augmentation_controls(self):
+        """Initialize the augmentation controls based on available config."""
+        # Get all available augmentations from config
+        if hasattr(self.parent, 'config_loader'):
+            all_augmentations = self.parent.config_loader.get_augmentations()
+            self.available_augmentations = list(all_augmentations.keys())
+            self.active_augmentations = list(all_augmentations.keys())  # Initially all are active
+            self.update_buttons_state()
+    
+    def update_buttons_state(self):
+        """Update the Add and Remove buttons based on available/active augmentations."""
+        # Enable Add button if there are augmentations available to add
+        available_to_add = [aug for aug in self.available_augmentations 
+                          if aug not in self.active_augmentations]
+        self.add_button.setEnabled(len(available_to_add) > 0)
+        
+        # Enable Remove button if there are removable augmentations
+        removable_augmentations = [aug for aug in self.active_augmentations 
+                                 if aug not in self.core_augmentations]
+        self.remove_button.setEnabled(len(removable_augmentations) > 0)
+    
+    def show_add_menu(self):
+        """Show a dropdown menu with available augmentations to add."""
+        menu = QMenu(self)
+        
+        # Get available augmentations that are not currently active
+        available_to_add = [aug for aug in self.available_augmentations 
+                          if aug not in self.active_augmentations]
+        
+        if not available_to_add:
+            action = menu.addAction("No augmentations available to add")
+            action.setEnabled(False)
+        else:
+            for aug_type in available_to_add:
+                aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
+                display_name = aug_info.get('name', aug_type.capitalize())
+                action = menu.addAction(display_name)
+                action.setData(aug_type)
+                action.triggered.connect(lambda checked, a=aug_type: self.add_augmentation(a))
+        
+        # Show the menu
+        menu.exec(self.add_button.mapToGlobal(self.add_button.rect().topLeft()))
+    
+    def show_remove_menu(self):
+        """Show a dropdown menu with active augmentations that can be removed."""
+        menu = QMenu(self)
+        
+        # Get augmentations that can be removed (not core augmentations)
+        removable_augmentations = [aug for aug in self.active_augmentations 
+                                 if aug not in self.core_augmentations]
+        
+        if not removable_augmentations:
+            action = menu.addAction("No augmentations available to remove")
+            action.setEnabled(False)
+        else:
+            for aug_type in removable_augmentations:
+                aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
+                display_name = aug_info.get('name', aug_type.capitalize())
+                action = menu.addAction(display_name)
+                action.setData(aug_type)
+                action.triggered.connect(lambda checked, a=aug_type: self.remove_augmentation_by_type(a))
+        
+        # Show the menu
+        menu.exec(self.remove_button.mapToGlobal(self.remove_button.rect().topLeft()))
+    
+    def add_augmentation(self, aug_type=None):
+        """Add a new augmentation slider from the available options."""
+        if aug_type and aug_type not in self.active_augmentations:
+            # Get augmentation info from config
+            augmentations = self.parent.config_loader.get_augmentations()
+            aug_info = augmentations.get(aug_type, {})
+            
+            # Add the slider
+            self.add_slider(
+                name=aug_info.get('name', aug_type.capitalize()),
+                slider_attr=aug_info.get('slider_attr', f'{aug_type}_slider'),
+                value_attr=aug_info.get('value_attr', f'{aug_type}_value'),
+                default_value=aug_info.get('default_value', 50),
+                augmentation_type=aug_type,
+                details_text=aug_info.get('details', '')
+            )
+            
+            # Check if this augmentation has child sliders
+            child_sliders_config = self.parent.config_loader.get_child_sliders()
+            if aug_info.get('slider_attr') in child_sliders_config:
+                for child_info in child_sliders_config[aug_info['slider_attr']]:
+                    self.add_child_slider(
+                        parent_attr=aug_info['slider_attr'],
+                        name=child_info['name'],
+                        child_attr=child_info['attr'],
+                        default_value=child_info.get('default', 50)
+                    )
+            
+            # Check if this augmentation has float inputs
+            float_params_config = self.parent.config_loader.get_float_params()
+            if aug_info.get('slider_attr') in float_params_config:
+                for input_info in float_params_config[aug_info['slider_attr']]:
+                    self.add_float_input(
+                        parent_attr=aug_info['slider_attr'],
+                        name=input_info['name'],
+                        input_attr=input_info['attr'],
+                        default_value=input_info.get('default', 0.5),
+                        min_value=input_info.get('min', 0.0),
+                        max_value=input_info.get('max', 1.0),
+                        step=input_info.get('step', 0.01)
+                    )
+            
+            # Update active augmentations
+            self.active_augmentations.append(aug_type)
+            self.update_buttons_state()
+    
+    def remove_augmentation_by_type(self, aug_type):
+        """Remove augmentation by its type."""
+        # Check if this is a core augmentation
+        if aug_type in self.core_augmentations:
+            QMessageBox.warning(
+                self,
+                "Cannot Remove",
+                f"'{aug_type}' is a core augmentation and cannot be removed."
+            )
+            return
+        
+        # Find the slider attribute for this augmentation type
+        slider_attr = None
+        for attr, type_ in self.slider_to_augmentation_type.items():
+            if type_ == aug_type:
+                slider_attr = attr
+                break
+        
+        if slider_attr:
+            self.remove_slider(slider_attr)
+            
+            # Update active augmentations
+            if aug_type in self.active_augmentations:
+                self.active_augmentations.remove(aug_type)
+            
+            self.update_buttons_state()
+    
+    def remove_slider(self, slider_attr):
+        """Remove a slider and all its associated components."""
+        # Find the list item
+        item_to_remove = None
+        for i in range(self.sliders_list.count()):
+            item = self.sliders_list.item(i)
+            if self.find_list_item_for_slider(self.sliders[slider_attr]) == item:
+                item_to_remove = item
+                break
+        
+        if item_to_remove:
+            # Remove child sliders first
+            if slider_attr in self.parent_child_mapping:
+                for child_attr in self.parent_child_mapping[slider_attr][:]:
+                    if child_attr in self.child_sliders:
+                        del self.child_sliders[child_attr]
+                del self.parent_child_mapping[slider_attr]
+            
+            # Remove float inputs
+            if slider_attr in self.parent_float_mapping:
+                for float_attr in self.parent_float_mapping[slider_attr][:]:
+                    if float_attr in self.float_inputs:
+                        del self.float_inputs[float_attr]
+                del self.parent_float_mapping[slider_attr]
+            
+            # Remove the main slider
+            if slider_attr in self.sliders:
+                del self.sliders[slider_attr]
+            
+            # Remove associated value edit
+            value_attr = slider_attr.replace('slider', 'value')
+            if value_attr in self.values:
+                del self.values[value_attr]
+            
+            # Remove details widget
+            if slider_attr in self.details:
+                del self.details[slider_attr]
+            
+            # Remove from slider to augmentation mapping
+            if slider_attr in self.slider_to_augmentation_type:
+                del self.slider_to_augmentation_type[slider_attr]
+            
+            # Remove the list item
+            row = self.sliders_list.row(item_to_remove)
+            self.sliders_list.takeItem(row)
+    
+    def find_list_item_for_slider(self, slider):
+        """Find the QListWidgetItem that contains a specific slider."""
+        for i in range(self.sliders_list.count()):
+            item = self.sliders_list.item(i)
+            main_widget = self.sliders_list.itemWidget(item)
+            
+            if main_widget:
+                # Look through all widgets to find the slider
+                for widget in main_widget.findChildren(QSlider):
+                    if widget == slider:
+                        return item
+        return None
+    
     def add_slider(self, name, slider_attr, value_attr, default_value=50, augmentation_type=None, details_text=""):
         """Add a new slider to the list with the given name and attributes."""
         # Create a main widget to hold both slider and details
@@ -534,7 +786,6 @@ class ReorderableSliders(QWidget):
     def get_augmentation_order(self):
         """Get the current order of augmentations from the sliders list."""
         augmentation_order = []
-        valid_augmentation_types = ["mirror", "crop", "zoom", "rotate", "overlay"]
         
         for i in range(self.sliders_list.count()):
             main_widget = self.sliders_list.itemWidget(self.sliders_list.item(i))
@@ -546,7 +797,7 @@ class ReorderableSliders(QWidget):
                     for attr_name, attr_value in self.sliders.items():
                         if attr_value is widget and attr_name in self.slider_to_augmentation_type:
                             aug_type = self.slider_to_augmentation_type[attr_name]
-                            if aug_type in valid_augmentation_types:
+                            if aug_type in self.active_augmentations:
                                 augmentation_order.append(aug_type)
                             break
                     break
@@ -788,7 +1039,8 @@ class ReorderableSliders(QWidget):
         for aug_type in order:
             if aug_type in aug_to_slider:
                 slider_attr = aug_to_slider[aug_type]
-                ordered_sliders.append(slider_attr)
+                if slider_attr in slider_configs:
+                    ordered_sliders.append(slider_attr)
         
         # Add any remaining sliders not in the order
         for slider_attr in slider_configs:
