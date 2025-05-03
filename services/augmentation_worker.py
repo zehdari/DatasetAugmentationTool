@@ -48,8 +48,6 @@ def process_single_image_worker(args):
         if image is None:
             return False, f"Could not read image: {img_path}"
         
-        h, w = image.shape[:2]
-        
         # Read and parse labels
         with open(label_path, 'r') as f:
             lines = f.readlines()
@@ -94,8 +92,6 @@ def process_single_image_worker(args):
             polygons=polygons,
             current_subfolder=subfolder,
             class_ids=class_ids,
-            h=h,
-            w=w,
             coco_image=overlay_image,  # Pass the overlay image directly
             **augmentation_params  # Pass all parameters at once
         )

@@ -505,7 +505,7 @@ class ImageAugmenter:
                                                    overlay_min_max_scale[1])
         return image, polygons
 
-    def augment_image(self, image, polygons, current_subfolder, class_ids, h, w, skip_augmentations, 
+    def augment_image(self, image, polygons, current_subfolder, class_ids, skip_augmentations, 
                 mirror_weights, crop_weights, overlay_weights, rotate_weights, 
                 rotation_random_vs_90_weights, maintain_aspect_ratio_weights, zoom_weights, 
                 zoom_in_vs_out_weights, 

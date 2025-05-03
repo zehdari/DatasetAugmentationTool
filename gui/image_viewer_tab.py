@@ -242,7 +242,6 @@ class ImageViewerTab(QWidget):
         
         # Load the image
         image = cv2.imread(self.current_image_path)
-        (h, w) = image.shape[:2]
 
         # Get a random overlay image if available
         overlay_image = None
@@ -281,8 +280,6 @@ class ImageViewerTab(QWidget):
             polygons=polygons,
             current_subfolder=self.folder_name,
             class_ids=class_ids,
-            h=h,
-            w=w,
             skip_augmentations=params['skip_augmentations'], 
             mirror_weights=mirror_weights, 
             crop_weights=crop_weights,
