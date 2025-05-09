@@ -376,7 +376,7 @@ class AugmentationSettingsTab(QWidget):
             params["overlay_weights"] = [0, 100]  # Disable overlay
             
         return params
-        
+ 
     def update_class_colors_table(self):
         # Delegate to the class colors manager
         self.class_colors_manager.update_class_colors_table(self.class_colors, self.id_to_label)

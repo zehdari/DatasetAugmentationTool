@@ -8,7 +8,26 @@ from shapely.ops import unary_union
 
 class ImageAugmenter:
     def __init__(self):
-        pass
+        # Disable OpenCV multithreading to prevent conflicts with multiprocessing
+        cv2.setNumThreads(0)
+        
+        # Define base augmentation functions
+        self.base_augmentations = {
+            "mirror": self.mirror_augmentation,
+            "crop": self.crop_augmentation,
+            "zoom": self.zoom_augmentation,
+            "rotate": self.rotate_augmentation,
+            "overlay": self.overlay_augmentation
+        }
+        
+        # Define albumentation functions
+        self.albumentation_functions = {
+            "gaussianblur": self.gaussianblur_augmentation,
+            "motionblur": self.motionblur_augmentation,
+            "randombrightnessconstrant": self.brightness_contrast_augmentation,
+            "randomfog": self.fog_augmentation,
+            "randomshadow": self.shadow_augmentation
+        }
         
     @staticmethod
     def mirror_polygon(polygon):
@@ -370,7 +389,6 @@ class ImageAugmenter:
         x_offset = random.randint(0, max(coco_image.shape[1] - cropped_detection.shape[1], 1))
         y_offset = random.randint(0, max(coco_image.shape[0] - cropped_detection.shape[0], 1))
 
-        # TEST
         overlay[y_offset:y_offset + cropped_detection.shape[0], x_offset:x_offset + cropped_detection.shape[1]] = cropped_detection
 
         # Combine the overlay with the original image
@@ -417,6 +435,124 @@ class ImageAugmenter:
 
         return coco_image, adjusted_polygons
 
+    def augment_mirror(self, image, polygons):
+        image = ImageAugmenter.mirror_image(image)
+        polygons = [ImageAugmenter.mirror_polygon(polygon) for polygon in polygons]
+        return image, polygons
+
+    def augment_crop(self, image, polygons, class_ids, maintain_aspect_ratio_weights): 
+        h_current, w_current = image.shape[:2]
+
+        image, polygons, class_ids = self.crop_image_and_polygons(
+            image, polygons, class_ids)
+
+        maintain = random.choices(
+            [True, False], weights=maintain_aspect_ratio_weights, k=1)[0]
+
+        if maintain:
+            # use the *current* dimensions, not the stale (h, w)
+            image, polygons = self.pad_image_and_adjust_polygons(
+                image, polygons, (h_current, w_current))
+
+        return image, polygons, class_ids
+
+    def augment_zoom(self, image, polygons, zoom_in_vs_out_weights, zoom_padding):
+        zoom_in = random.choices([True, False], weights=zoom_in_vs_out_weights, k=1)[0]
+        if zoom_in:
+            image, polygons = self.zoom_in_image_and_polygons(image, polygons, zoom_padding[0], zoom_padding[1])
+        else:
+            image, polygons = self.zoom_out_image_and_polygons(image, polygons, zoom_padding[2], zoom_padding[3])
+        return image, polygons
+
+    def augment_rotate(self, image, polygons, rotation_random_vs_90_weights):
+        (h, w) = image.shape[:2]
+        center = (w / 2, h / 2)
+        rotation_degree = ImageAugmenter.get_rotation_angle(rotation_random_vs_90_weights)
+        image = ImageAugmenter.rotate_image(image, rotation_degree)
+        new_w, new_h = image.shape[1], image.shape[0]
+        new_center = (new_w / 2, new_h / 2)
+        polygons = [ImageAugmenter.rotate_polygon(polygon, rotation_degree, center, new_center, (w, h), (new_w, new_h)) for polygon in polygons]
+        return image, polygons
+
+    def augment_overlay(self, image, polygons, coco_image, overlay_min_max_scale):
+        image, polygons = self.overlay_detections_on_coco(coco_image, image, polygons, 
+                                                   overlay_min_max_scale[0], 
+                                                   overlay_min_max_scale[1])
+        return image, polygons
+
+    # Helper methods for dict-based augmentations
+    def mirror_augmentation(self, image, polygons, params):
+        mirror_weights = params.get('mirror_weights', [50, 50])
+        if random.choices([True, False], weights=mirror_weights, k=1)[0]:
+            return self.augment_mirror(image, polygons)
+        return image, polygons
+    
+    def crop_augmentation(self, image, polygons, params):
+        crop_weights = params.get('crop_weights', [50, 50])
+        maintain_aspect_ratio_weights = params.get('maintain_aspect_ratio_weights', [50, 50])
+        class_ids = params.get('class_ids')
+        
+        if random.choices([True, False], weights=crop_weights, k=1)[0] and polygons:
+            return self.augment_crop(image, polygons, class_ids, maintain_aspect_ratio_weights)
+        return image, polygons, class_ids
+    
+    def zoom_augmentation(self, image, polygons, params):
+        zoom_weights = params.get('zoom_weights', [50, 50])
+        zoom_in_vs_out_weights = params.get('zoom_in_vs_out_weights', [50, 50])
+        zoom_padding = params.get('zoom_padding')
+        
+        if random.choices([True, False], weights=zoom_weights, k=1)[0] and polygons:
+            return self.augment_zoom(image, polygons, zoom_in_vs_out_weights, zoom_padding)
+        return image, polygons
+    
+    def rotate_augmentation(self, image, polygons, params):
+        rotate_weights = params.get('rotate_weights', [50, 50])
+        rotation_random_vs_90_weights = params.get('rotation_random_vs_90_weights', [50, 50])
+        
+        if random.choices([True, False], weights=rotate_weights, k=1)[0]:
+            return self.augment_rotate(image, polygons, rotation_random_vs_90_weights)
+        return image, polygons
+    
+    def overlay_augmentation(self, image, polygons, params):
+        overlay_weights = params.get('overlay_weights', [50, 50])
+        overlay_min_max_scale = params.get('overlay_min_max_scale')
+        coco_image = params.get('coco_image')
+        
+        if coco_image is not None and random.choices([True, False], weights=overlay_weights, k=1)[0] and polygons:
+            return self.augment_overlay(image, polygons, coco_image, overlay_min_max_scale)
+        return image, polygons
+    
+    # Albumentation helper methods
+    def gaussianblur_augmentation(self, image, kwargs):
+        sigma_limit = float(kwargs.get("gaussianblur_sigma_limit", 3.0))
+        return A.GaussianBlur(sigma_limit=(sigma_limit, sigma_limit), p=1.0)(image=image)['image']
+    
+    def motionblur_augmentation(self, image, kwargs):
+        blur_limit = int(kwargs.get("motionblur_blur_limit", 7))
+        return A.MotionBlur(blur_limit=blur_limit, p=1.0)(image=image)['image']
+    
+    def brightness_contrast_augmentation(self, image, kwargs):
+        brightness = float(kwargs.get("randombrightnessconstrant_brightness_limit", 0.2))
+        contrast = float(kwargs.get("randombrightnessconstrant_contrast_limit", 0.2))
+        return A.RandomBrightnessContrast(
+            brightness_limit=brightness,
+            contrast_limit=contrast,
+            p=1.0
+        )(image=image)['image']
+    
+    def fog_augmentation(self, image, kwargs):
+        fog_coef_lower = float(kwargs.get("randomfog_fog_coef_lower", 0.3))
+        fog_coef_upper = float(kwargs.get("randomfog_fog_coef_upper", 0.5))
+        return A.RandomFog(
+            fog_coef_lower=fog_coef_lower,
+            fog_coef_upper=fog_coef_upper,
+            p=1.0
+        )(image=image)['image']
+    
+    def shadow_augmentation(self, image, kwargs):
+        shadow_dimension = int(kwargs.get("randomshadow_shadow_dimension", 5))
+        return A.RandomShadow(shadow_dimension=shadow_dimension, p=1.0)(image=image)['image']
+    
     @staticmethod
     def apply_albumentations(image):
         p_augment = 0.5  # Base probability for image quality augmentations
@@ -458,149 +594,71 @@ class ImageAugmenter:
         # Apply augmentation
         augmented = transform(image=image)
         return augmented['image']
-
-    def augment_mirror(self, image, polygons):
-        image = ImageAugmenter.mirror_image(image)
-        polygons = [ImageAugmenter.mirror_polygon(polygon) for polygon in polygons]
-        return image, polygons
-
-    def augment_crop(self, image, polygons, class_ids, maintain_aspect_ratio_weights): 
-        h_current, w_current = image.shape[:2]
-
-        image, polygons, class_ids = self.crop_image_and_polygons(
-            image, polygons, class_ids)
-
-        maintain = random.choices(
-            [True, False], weights=maintain_aspect_ratio_weights, k=1)[0]
-
-        if maintain:
-            # use the *current* dimensions, not the stale (h, w)
-            image, polygons = self.pad_image_and_adjust_polygons(
-                image, polygons, (h_current, w_current))
-
-        return image, polygons, class_ids
-
-
-    def augment_zoom(self, image, polygons, zoom_in_vs_out_weights, zoom_padding):
-        zoom_in = random.choices([True, False], weights=zoom_in_vs_out_weights, k=1)[0]
-        if zoom_in:
-            image, polygons = self.zoom_in_image_and_polygons(image, polygons, zoom_padding[0], zoom_padding[1])
-        else:
-            image, polygons = self.zoom_out_image_and_polygons(image, polygons, zoom_padding[2], zoom_padding[3])
-        return image, polygons
-
-    def augment_rotate(self, image, polygons, rotation_random_vs_90_weights):
-        (h, w) = image.shape[:2]
-        center = (w / 2, h / 2)
-        rotation_degree = ImageAugmenter.get_rotation_angle(rotation_random_vs_90_weights)
-        image = ImageAugmenter.rotate_image(image, rotation_degree)
-        new_w, new_h = image.shape[1], image.shape[0]
-        new_center = (new_w / 2, new_h / 2)
-        polygons = [ImageAugmenter.rotate_polygon(polygon, rotation_degree, center, new_center, (w, h), (new_w, new_h)) for polygon in polygons]
-        return image, polygons
-
-    def augment_overlay(self, image, polygons, coco_image, overlay_min_max_scale):
-        image, polygons = self.overlay_detections_on_coco(coco_image, image, polygons, 
-                                                   overlay_min_max_scale[0], 
-                                                   overlay_min_max_scale[1])
-        return image, polygons
-
+    
+    # Main augmentation method
     def augment_image(self, image, polygons, current_subfolder, class_ids, skip_augmentations, 
-                mirror_weights, crop_weights, overlay_weights, rotate_weights, 
-                rotation_random_vs_90_weights, maintain_aspect_ratio_weights, zoom_weights, 
-                zoom_in_vs_out_weights, 
-                # Replace compound parameters with individual ones
-                zoom_in_min_padding=0.1, zoom_in_max_padding=0.3,
-                zoom_out_min_padding=0.1, zoom_out_max_padding=0.5,
-                overlay_min_scale=0.3, overlay_max_scale=1.0,
-                coco_image=None, augmentation_order=None, **kwargs):
+                    mirror_weights, crop_weights, overlay_weights, rotate_weights, 
+                    rotation_random_vs_90_weights, maintain_aspect_ratio_weights, zoom_weights, 
+                    zoom_in_vs_out_weights, 
+                    zoom_in_min_padding=0.1, zoom_in_max_padding=0.3,
+                    zoom_out_min_padding=0.1, zoom_out_max_padding=0.5,
+                    overlay_min_scale=0.3, overlay_max_scale=1.0,
+                    coco_image=None, augmentation_order=None, **kwargs):
         
         # Define the default augmentation order if none is provided
         if augmentation_order is None:
-            augmentation_order = ["mirror", "crop", "zoom", "rotate", "overlay"]
+            augmentation_order = ["mirror", "crop", "zoom", "rotate", "overlay",
+                                 "gaussianblur", "motionblur", "randombrightnessconstrant", 
+                                 "randomfog", "randomshadow"]
         
         # Create compound parameters from individual ones
         zoom_padding = [zoom_in_min_padding, zoom_in_max_padding, 
-                    zoom_out_min_padding, zoom_out_max_padding]
+                     zoom_out_min_padding, zoom_out_max_padding]
         overlay_min_max_scale = [overlay_min_scale, overlay_max_scale]
         
-        # Create a mapping of augmentation types to their functions and parameters
-        augmentation_functions = {
-            "mirror": {
-                "func": lambda img, polys: self.augment_mirror(img, polys) if random.choices([True, False], weights=mirror_weights, k=1)[0] else (img, polys),
-                "skip_key": 'Mirror',
-                "needs_polygons": False
-            },
-            "crop": {
-                "func": lambda img, polys: self.augment_crop(img, polys, class_ids, maintain_aspect_ratio_weights) if random.choices([True, False], weights=crop_weights, k=1)[0] else (img, polys, class_ids),
-                "skip_key": 'Crop',
-                "needs_polygons": True
-            },
-            "zoom": {
-                "func": lambda img, polys: self.augment_zoom(img, polys, zoom_in_vs_out_weights, zoom_padding) if random.choices([True, False], weights=zoom_weights, k=1)[0] else (img, polys),
-                "skip_key": 'Zoom',
-                "needs_polygons": True
-            },
-            "rotate": {
-                "func": lambda img, polys: self.augment_rotate(img, polys, rotation_random_vs_90_weights) if random.choices([True, False], weights=rotate_weights, k=1)[0] else (img, polys),
-                "skip_key": 'Rotate',
-                "needs_polygons": False
-            },
-            "overlay": {
-                "func": lambda img, polys: self.augment_overlay(img, polys, coco_image, overlay_min_max_scale) if coco_image is not None and random.choices([True, False], weights=overlay_weights, k=1)[0] else (img, polys),
-                "skip_key": 'Overlay',
-                "needs_polygons": True
-            }
+        # Create a parameters dictionary to pass to the augmentation functions
+        params = {
+            'mirror_weights': mirror_weights,
+            'crop_weights': crop_weights,
+            'overlay_weights': overlay_weights,
+            'rotate_weights': rotate_weights,
+            'rotation_random_vs_90_weights': rotation_random_vs_90_weights,
+            'maintain_aspect_ratio_weights': maintain_aspect_ratio_weights,
+            'zoom_weights': zoom_weights,
+            'zoom_in_vs_out_weights': zoom_in_vs_out_weights,
+            'zoom_padding': zoom_padding,
+            'overlay_min_max_scale': overlay_min_max_scale,
+            'coco_image': coco_image,
+            'class_ids': class_ids
         }
-        
-        # Support for additional augmentation types provided in kwargs
-        for aug_type, aug_params in kwargs.items():
-            if aug_type.endswith('_weights') and aug_type not in augmentation_functions:
-                # Extract the base augmentation type (remove '_weights' suffix)
-                base_type = aug_type[:-8]  # Remove '_weights'
-                
-                # Check if we have a method for this augmentation type
-                method_name = f"augment_{base_type}"
-                if hasattr(self, method_name) and callable(getattr(self, method_name)):
-                    # Create a function that will call the method dynamically
-                    aug_method = getattr(self, method_name)
-                    
-                    # Get any additional parameters for this augmentation
-                    method_params = {}
-                    for param_key, param_value in kwargs.items():
-                        if param_key.startswith(f"{base_type}_") and param_key != aug_type:
-                            # Extract parameter name (remove 'base_type_' prefix)
-                            param_name = param_key[len(base_type)+1:]
-                            method_params[param_name] = param_value
-                    
-                    # Add the augmentation function to the dictionary
-                    augmentation_functions[base_type] = {
-                        "func": lambda img, polys, t=base_type, m=aug_method, p=method_params, w=aug_params: 
-                                m(img, polys, **p) if random.choices([True, False], weights=w, k=1)[0] 
-                                else (img, polys),
-                        "skip_key": base_type.capitalize(),
-                        "needs_polygons": True  # Default to True for safety
-                    }
         
         # Apply augmentations in the specified order
         for aug_type in augmentation_order:
-            if aug_type in augmentation_functions:
-                aug_info = augmentation_functions[aug_type]
+            # Skip this augmentation if specified for current subfolder
+            if current_subfolder in skip_augmentations.get(aug_type.capitalize(), []):
+                continue
+            
+            # Handle base augmentations (polygon transforms)
+            if aug_type in self.base_augmentations:
+                result = self.base_augmentations[aug_type](image, polygons, params)
                 
-                # Skip this augmentation if specified for current subfolder
-                if current_subfolder in skip_augmentations.get(aug_info["skip_key"], []):
-                    continue
-                    
-                # Skip if we need polygons but don't have any
-                if aug_info["needs_polygons"] and not polygons:
-                    continue
-                    
-                # Apply the augmentation
+                # Handle different return types
                 if aug_type == "crop":
-                    # Crop is special because it returns class_ids too
-                    image, polygons, class_ids = aug_info["func"](image, polygons)
+                    image, polygons, class_ids = result
+                    params['class_ids'] = class_ids  # Update class_ids in params
                 else:
-                    image, polygons = aug_info["func"](image, polygons)
+                    image, polygons = result
+                    
+            # Handle albumentation augmentations (image-only transforms)
+            elif aug_type in self.albumentation_functions:
+                weight_key = f"{aug_type}_weights"
+                if weight_key in kwargs and random.choices([True, False], weights=kwargs[weight_key], k=1)[0]:
+                    try:
+                        image = self.albumentation_functions[aug_type](image, kwargs)
+                    except Exception as e:
+                        pass
         
+        #self.apply_albumentations(image)
+
         formatted_polygons = [['{}'.format(class_id), *polygon] for class_id, polygon in zip(class_ids, polygons)]
         return image, formatted_polygons

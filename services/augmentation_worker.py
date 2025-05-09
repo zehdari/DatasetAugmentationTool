@@ -62,29 +62,15 @@ def process_single_image_worker(args):
                 polygons.append(coords)
         
         # Extract the parameters needed for augmentation
-        augmentation_params = {
-            'skip_augmentations': params['skip_augmentations'],
-            'mirror_weights': params['mirror_weights'],
-            'crop_weights': params['crop_weights'],
-            'overlay_weights': params['overlay_weights'],
-            'rotate_weights': params['rotate_weights'],
-            'rotation_random_vs_90_weights': params['rotation_random_vs_90_weights'],
-            'maintain_aspect_ratio_weights': params['maintain_aspect_ratio_weights'],
-            'zoom_weights': params['zoom_weights'],
-            'zoom_in_vs_out_weights': params['zoom_in_vs_out_weights'],
-            'augmentation_order': params.get('augmentation_order')
-        }
+        augmentation_params = {}
         
-        # Add individual parameters for zoom padding and overlay scale
-        augmentation_params.update({
-            'zoom_in_min_padding': params.get('zoom_in_min_padding', 0.1),
-            'zoom_in_max_padding': params.get('zoom_in_max_padding', 0.3),
-            'zoom_out_min_padding': params.get('zoom_out_min_padding', 0.1),
-            'zoom_out_max_padding': params.get('zoom_out_max_padding', 0.5),
-            'overlay_min_scale': params.get('overlay_min_scale', 0.3),
-            'overlay_max_scale': params.get('overlay_max_scale', 1.0)
-        })
-        
+        # Add all parameters directly to augmentation_params
+        for key, value in params.items():
+            # Skip specific keys that are not augmentation parameters
+            if key in ['image_dir', 'label_dir', 'augmented_image_dir', 'augmented_label_dir', 'coco_image_folder']:
+                continue
+            augmentation_params[key] = value
+
         # Perform augmentation
         augmenter = ImageAugmenter()
         augmented_image, augmented_polygons = augmenter.augment_image(
@@ -110,6 +96,7 @@ def process_single_image_worker(args):
         
     except Exception as e:
         return False, f"Error processing {relative_path}: {str(e)}"
+
 class AugmentationWorker(QThread):
     progress = pyqtSignal(int)
     progress_log = pyqtSignal(str)
@@ -137,7 +124,7 @@ class AugmentationWorker(QThread):
             self.image_loader = OverlayProvider(self.params['coco_image_folder'], max_buffers=3)
         else:
             self.image_loader = None
-    
+
     def calculate_memory_adaptive_parameters(self):
         """Calculate batch size and other parameters based on available system memory."""
         try:

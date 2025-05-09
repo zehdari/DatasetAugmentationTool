@@ -35,13 +35,41 @@ augmentations:
     default_value: 50
     details: "Overlays objects from one image onto another. Higher percentage means overlays will be applied more frequently. Requires overlay directory selection."
   
-  # Example of a new augmentation type
-  blur:
-    name: "Blur"
-    slider_attr: "blur_slider"
-    value_attr: "blur_value"
+  # Albumentations-based augmentations - direct mapping to library functions
+  gaussianblur:
+    name: "Gaussian Blur"
+    slider_attr: "gaussianblur_slider"
+    value_attr: "gaussianblur_value"
     default_value: 30
     details: "Applies a Gaussian blur to the image. Higher percentage means blur will be applied more frequently."
+  
+  motionblur:
+    name: "Motion Blur"
+    slider_attr: "motionblur_slider"
+    value_attr: "motionblur_value"
+    default_value: 20
+    details: "Applies a directional motion blur to the image. Higher percentage means motion blur will be applied more frequently."
+  
+  randombrightnessconstrant:
+    name: "Brightness/Contrast"
+    slider_attr: "randombrightnessconstrant_slider"
+    value_attr: "randombrightnessconstrant_value"
+    default_value: 40
+    details: "Randomly changes brightness and contrast of the image. Higher percentage means this effect will be applied more frequently."
+  
+  randomfog:
+    name: "Fog Effect"
+    slider_attr: "randomfog_slider"
+    value_attr: "randomfog_value"
+    default_value: 20
+    details: "Adds a fog effect to the image. Higher percentage means fog will be applied more frequently."
+
+  randomshadow:
+    name: "Random Shadow"
+    slider_attr: "randomshadow_slider"
+    value_attr: "randomshadow_value"
+    default_value: 25
+    details: "Adds random shadows to the image. Higher percentage means shadows will be applied more frequently."
 
 # Skip categories (these appear as columns in the skip table)
 skip_categories:
@@ -50,7 +78,11 @@ skip_categories:
   - "Rotate"
   - "Mirror"
   - "Overlay"
-  - "Blur"  # Added new category
+  - "Gaussian Blur"
+  - "Motion Blur"
+  - "Brightness/Contrast"
+  - "Fog Effect"
+  - "Random Shadow"
 
 # Float parameters for sliders
 float_params:
@@ -94,40 +126,72 @@ float_params:
       max: 2.0
       step: 0.01
   
-  # Example of float parameters for a new augmentation
-  blur_slider:
-    - attr: "blur_sigma_min"
-      name: "Blur Sigma Min:"
-      default: 0.5
-      min: 0.1
-      max: 5.0
-      step: 0.1
-    - attr: "blur_sigma_max"
-      name: "Blur Sigma Max:"
+  # Float parameters for albumentations augmentations
+  gaussianblur_slider:
+    - attr: "gaussianblur_sigma_limit"
+      name: "Blur Sigma Limit:"
       default: 3.0
-      min: 0.5
+      min: 0.0
       max: 10.0
       step: 0.1
+  
+  motionblur_slider:
+    - attr: "motionblur_blur_limit"
+      name: "Motion Blur Limit:"
+      default: 7
+      min: 3
+      max: 20
+      step: 1
+  
+  randombrightnessconstrant_slider:
+    - attr: "randombrightnessconstrant_brightness_limit"
+      name: "Brightness Limit:"
+      default: 0.2
+      min: 0.0
+      max: 1.0
+      step: 0.05
+    - attr: "randombrightnessconstrant_contrast_limit"
+      name: "Contrast Limit:"
+      default: 0.2
+      min: 0.0
+      max: 1.0
+      step: 0.05
+  
+  randomfog_slider:
+    - attr: "randomfog_fog_coef_lower"
+      name: "Fog Coefficient Lower:"
+      default: 0.3
+      min: 0.1
+      max: 0.5
+      step: 0.05
+    - attr: "randomfog_fog_coef_upper"
+      name: "Fog Coefficient Upper:"
+      default: 0.5
+      min: 0.3
+      max: 1.0
+      step: 0.05
+  
+  randomshadow_slider:
+    - attr: "randomshadow_shadow_dimension"
+      name: "Shadow Dimension:"
+      default: 5
+      min: 3
+      max: 10
+      step: 1
 
 # Child sliders for parent sliders
 child_sliders:
   rotate_slider:
     - attr: "rotation_random_vs_90_slider"
-      name: "Rotation (0 to 360) vs 90 %: "
+      name: "Rotation (0 to 360) vs 90°: "
       default: 25
   
   crop_slider:
     - attr: "maintain_aspect_ratio_slider"
-      name: "Maintain Aspect Ratio on Crop %: "
+      name: "Maintain Aspect Ratio on Crop: "
       default: 50
   
   zoom_slider:
     - attr: "zoom_in_vs_out_slider"
-      name: "Zoom In vs Out %: "
+      name: "Zoom In vs Out: "
       default: 40
-  
-  # Example of child sliders for a new augmentation
-  blur_slider:
-    - attr: "blur_gaussian_vs_motion_slider"
-      name: "Gaussian vs Motion Blur %: "
-      default: 75
