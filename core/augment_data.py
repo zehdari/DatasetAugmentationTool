@@ -522,7 +522,7 @@ class ImageAugmenter:
             return self.augment_overlay(image, polygons, coco_image, overlay_min_max_scale)
         return image, polygons
     
-    # Albumentation helper methods
+    # Albumentation helper methods (TRYING TO OPTIMIZE NOT IMPLEMENTED ATM)
     def gaussianblur_augmentation(self, image, kwargs):
         sigma_limit = float(kwargs.get("gaussianblur_sigma_limit", 3.0))
         return A.GaussianBlur(sigma_limit=(sigma_limit, sigma_limit), p=1.0)(image=image)['image']
@@ -552,48 +552,6 @@ class ImageAugmenter:
     def shadow_augmentation(self, image, kwargs):
         shadow_dimension = int(kwargs.get("randomshadow_shadow_dimension", 5))
         return A.RandomShadow(shadow_dimension=shadow_dimension, p=1.0)(image=image)['image']
-    
-    @staticmethod
-    def apply_albumentations(image):
-        p_augment = 0.5  # Base probability for image quality augmentations
-
-        # Create Albumentations transform focusing on image quality
-        transform = A.Compose([
-            # Noise and Color Transformations
-            A.MultiplicativeNoise(per_channel=True, p=p_augment),
-            # A.RGBShift(p=p_augment),
-            
-            # Fog and Sun Flare with simplified parameters
-            A.RandomFog(p=p_augment/2),
-            A.RandomSunFlare(p=p_augment/2),
-            
-            A.GaussianBlur(p=p_augment),
-            A.ISONoise(p=p_augment),
-            
-            # Simplified Image Compression
-            A.ImageCompression(p=p_augment),
-            
-            A.MotionBlur(p=p_augment),
-            A.Posterize(p=p_augment),
-            
-            # Simplified Shadow
-            A.RandomShadow(p=p_augment/2),
-            
-            A.RandomBrightnessContrast(p=p_augment),
-            
-            # Defocus with minimal parameters
-            A.Defocus(p=p_augment/2),
-            
-            A.Emboss(p=p_augment),
-            
-            # Less common or more subtle transformations
-            A.RandomGamma(p=p_augment/2),
-            A.RandomToneCurve(p=p_augment/2),
-        ], additional_targets={'image': 'image'})
-
-        # Apply augmentation
-        augmented = transform(image=image)
-        return augmented['image']
     
     # Main augmentation method
     def augment_image(self, image, polygons, current_subfolder, class_ids, skip_augmentations, 
@@ -649,16 +607,14 @@ class ImageAugmenter:
                 else:
                     image, polygons = result
                     
-            # Handle albumentation augmentations (image-only transforms)
-            elif aug_type in self.albumentation_functions:
-                weight_key = f"{aug_type}_weights"
-                if weight_key in kwargs and random.choices([True, False], weights=kwargs[weight_key], k=1)[0]:
-                    try:
-                        image = self.albumentation_functions[aug_type](image, kwargs)
-                    except Exception as e:
-                        pass
-        
-        #self.apply_albumentations(image)
+            # # Handle albumentation augmentations (image-only transforms)
+            # elif aug_type in self.albumentation_functions:
+            #     weight_key = f"{aug_type}_weights"
+            #     if weight_key in kwargs and random.choices([True, False], weights=kwargs[weight_key], k=1)[0]:
+            #         try:
+            #             image = self.albumentation_functions[aug_type](image, kwargs)
+            #         except Exception as e:
+            #             pass
 
         formatted_polygons = [['{}'.format(class_id), *polygon] for class_id, polygon in zip(class_ids, polygons)]
         return image, formatted_polygons

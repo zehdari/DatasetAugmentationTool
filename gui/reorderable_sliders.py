@@ -356,22 +356,23 @@ class ReorderableSliders(QWidget):
         
         layout.addWidget(self.sliders_list)
         
-        # Add and Remove buttons at the bottom
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(5, 5, 5, 5)
+        # ADD REMOVE BUTTONS WORKING BUT OUT ATM
+        # # Add and Remove buttons at the bottom
+        # bottom_layout = QHBoxLayout()
+        # bottom_layout.setContentsMargins(5, 5, 5, 5)
         
-        self.add_button = QPushButton("Add")
-        self.add_button.clicked.connect(self.show_add_menu)
+        # self.add_button = QPushButton("Add")
+        # self.add_button.clicked.connect(self.show_add_menu)
         
-        self.remove_button = QPushButton("Remove")
-        self.remove_button.clicked.connect(self.show_remove_menu)
+        # self.remove_button = QPushButton("Remove")
+        # self.remove_button.clicked.connect(self.show_remove_menu)
         
-        bottom_layout.addStretch()
-        bottom_layout.addWidget(self.add_button)
-        bottom_layout.addWidget(self.remove_button)
-        bottom_layout.addStretch()
+        # bottom_layout.addStretch()
+        # bottom_layout.addWidget(self.add_button)
+        # bottom_layout.addWidget(self.remove_button)
+        # bottom_layout.addStretch()
         
-        layout.addLayout(bottom_layout)
+        # layout.addLayout(bottom_layout)
         self.setLayout(layout)
         
         # Initialize augmentation controls
@@ -384,63 +385,63 @@ class ReorderableSliders(QWidget):
             all_augmentations = self.parent.config_loader.get_augmentations()
             self.available_augmentations = list(all_augmentations.keys())
             self.active_augmentations = list(all_augmentations.keys())  # Initially all are active
-            self.update_buttons_state()
+            #self.update_buttons_state()
     
-    def update_buttons_state(self):
-        """Update the Add and Remove buttons based on available/active augmentations."""
-        # Enable Add button if there are augmentations available to add
-        available_to_add = [aug for aug in self.available_augmentations 
-                          if aug not in self.active_augmentations]
-        self.add_button.setEnabled(len(available_to_add) > 0)
+    # def update_buttons_state(self):
+    #     """Update the Add and Remove buttons based on available/active augmentations."""
+    #     # Enable Add button if there are augmentations available to add
+    #     available_to_add = [aug for aug in self.available_augmentations 
+    #                       if aug not in self.active_augmentations]
+    #     self.add_button.setEnabled(len(available_to_add) > 0)
         
-        # Enable Remove button if there are removable augmentations
-        removable_augmentations = [aug for aug in self.active_augmentations 
-                                 if aug not in self.core_augmentations]
-        self.remove_button.setEnabled(len(removable_augmentations) > 0)
+    #     # Enable Remove button if there are removable augmentations
+    #     removable_augmentations = [aug for aug in self.active_augmentations 
+    #                              if aug not in self.core_augmentations]
+    #     self.remove_button.setEnabled(len(removable_augmentations) > 0)
     
-    def show_add_menu(self):
-        """Show a dropdown menu with available augmentations to add."""
-        menu = QMenu(self)
+    # def show_add_menu(self):
+    #     """Show a dropdown menu with available augmentations to add."""
+    #     menu = QMenu(self)
         
-        # Get available augmentations that are not currently active
-        available_to_add = [aug for aug in self.available_augmentations 
-                          if aug not in self.active_augmentations]
+    #     # Get available augmentations that are not currently active
+    #     available_to_add = [aug for aug in self.available_augmentations 
+    #                       if aug not in self.active_augmentations]
         
-        if not available_to_add:
-            action = menu.addAction("No augmentations available to add")
-            action.setEnabled(False)
-        else:
-            for aug_type in available_to_add:
-                aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
-                display_name = aug_info.get('name', aug_type.capitalize())
-                action = menu.addAction(display_name)
-                action.setData(aug_type)
-                action.triggered.connect(lambda checked, a=aug_type: self.add_augmentation(a))
+    #     if not available_to_add:
+    #         action = menu.addAction("No augmentations available to add")
+    #         action.setEnabled(False)
+    #     else:
+    #         for aug_type in available_to_add:
+    #             aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
+    #             display_name = aug_info.get('name', aug_type.capitalize())
+    #             action = menu.addAction(display_name)
+    #             action.setData(aug_type)
+    #             action.triggered.connect(lambda checked, a=aug_type: self.add_augmentation(a))
         
-        # Show the menu
-        menu.exec(self.add_button.mapToGlobal(self.add_button.rect().topLeft()))
+    #     # Show the menu
+    #     menu.exec(self.add_button.mapToGlobal(self.add_button.rect().topLeft()))
     
-    def show_remove_menu(self):
-        """Show a dropdown menu with active augmentations that can be removed."""
-        menu = QMenu(self)
+    # def show_remove_menu(self):
+    #     """Show a dropdown menu with active augmentations that can be removed."""
+    #     menu = QMenu(self)
         
-        # Get augmentations that can be removed (not core augmentations)
-        removable_augmentations = [aug for aug in self.active_augmentations 
-                                 if aug not in self.core_augmentations]
+    #     # Get augmentations that can be removed (not core augmentations)
+    #     removable_augmentations = [aug for aug in self.active_augmentations 
+    #                              if aug not in self.core_augmentations]
         
-        if not removable_augmentations:
-            action = menu.addAction("No augmentations available to remove")
-            action.setEnabled(False)
-        else:
-            for aug_type in removable_augmentations:
-                aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
-                display_name = aug_info.get('name', aug_type.capitalize())
-                action = menu.addAction(display_name)
-                action.setData(aug_type)
-                action.triggered.connect(lambda checked, a=aug_type: self.remove_augmentation_by_type(a))
+    #     if not removable_augmentations:
+    #         action = menu.addAction("No augmentations available to remove")
+    #         action.setEnabled(False)
+    #     else:
+    #         for aug_type in removable_augmentations:
+    #             aug_info = self.parent.config_loader.get_augmentations().get(aug_type, {})
+    #             display_name = aug_info.get('name', aug_type.capitalize())
+    #             action = menu.addAction(display_name)
+    #             action.setData(aug_type)
+    #             action.triggered.connect(lambda checked, a=aug_type: self.remove_augmentation_by_type(a))
         
-        # Show the menu
-        menu.exec(self.remove_button.mapToGlobal(self.remove_button.rect().topLeft()))
+    #     # Show the menu
+    #     menu.exec(self.remove_button.mapToGlobal(self.remove_button.rect().topLeft()))
     
     def add_augmentation(self, aug_type=None):
         """Add a new augmentation slider from the available options."""
@@ -486,7 +487,7 @@ class ReorderableSliders(QWidget):
             
             # Update active augmentations
             self.active_augmentations.append(aug_type)
-            self.update_buttons_state()
+            #self.update_buttons_state()
     
     def remove_augmentation_by_type(self, aug_type):
         """Remove augmentation by its type."""
@@ -513,7 +514,7 @@ class ReorderableSliders(QWidget):
             if aug_type in self.active_augmentations:
                 self.active_augmentations.remove(aug_type)
             
-            self.update_buttons_state()
+            #self.update_buttons_state()
     
     def remove_slider(self, slider_attr):
         """Remove a slider and all its associated components."""
