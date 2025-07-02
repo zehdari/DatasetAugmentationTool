@@ -13,6 +13,29 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from services.overlay_provider import OverlayProvider
 from core.augment_data import ImageAugmenter
 
+def identify_annotation_type(parts):
+    if len(parts) < 5:
+        return "unknown"
+    if len(parts) % 2 == 1 and len(parts) > 5:
+        return "polygon"
+    elif len(parts) == 5:
+        return "bbox"
+    else:
+        return "unknown"
+
+def convert_bbox_to_polygon(bbox):
+    class_id = bbox[0]
+    x_center, y_center, width, height = map(float, bbox[1:])
+    half_w = width / 2
+    half_h = height / 2
+    points = [
+        x_center - half_w, y_center - half_h,
+        x_center + half_w, y_center - half_h,
+        x_center + half_w, y_center + half_h,
+        x_center - half_w, y_center + half_h
+    ]
+    return [class_id] + points
+
 def process_single_image_worker(args):
     """Standalone function for processing a single image."""
     try:
@@ -55,6 +78,10 @@ def process_single_image_worker(args):
             class_ids = []
             for line in lines:
                 parts = line.strip().split()
+
+                if identify_annotation_type(parts) == 'bbox':
+                    parts = convert_bbox_to_polygon(parts)
+
                 class_id = parts[0]
                 class_ids.append(class_id)
                 coords = [(float(parts[i]), float(parts[i + 1])) 
